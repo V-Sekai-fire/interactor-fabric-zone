@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: If you use this code, cite picotls.
+title: picotls (vendored subset)
+abstract: >-
+  TLS 1.3 for the guests' QUIC stack: lib/ and include/ only, copied unmodified from the org's
+  engine fork (entities-godot, tag v2026.09.19.1621-main-fabric-0.2.4, thirdparty/picotls, last
+  changed at a7e88a49da). That copy carries no LICENSE file; LICENSE here is the MIT notice at the
+  head of every picotls source file.
+authors:
+  - name: DeNA Co., Ltd.
+  - name: Kazuho Oku
+repository-code: https://github.com/h2o/picotls
+license: MIT

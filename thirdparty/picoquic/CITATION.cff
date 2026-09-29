@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: If you use this code, cite picoquic.
+title: picoquic 1.1.47.0 (vendored subset)
+abstract: >-
+  QUIC, HTTP/3 and WebTransport for the guests: picoquic/, picohttp/ and picoquic_mbedtls/ only,
+  copied unmodified from the org's engine fork (entities-godot, tag
+  v2026.09.19.1621-main-fabric-0.2.4, thirdparty/picoquic, last changed at a7e88a49da). That copy
+  carries the fork's two patches, which load a private key from a buffer and follow mbedTLS 4.
+authors:
+  - name: Private Octopus
+repository-code: https://github.com/private-octopus/picoquic
+version: 1.1.47.0
+license: MIT
