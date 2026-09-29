@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: If you use this code, cite it as below.
+title: interactor-fabric-zone
+abstract: >-
+  The fabric's zones, CA, transport and casync assets as godot-sandbox guest ELFs. src/zone and src/casync port
+  entities-godot's modules/multiplayer_fabric and modules/multiplayer_fabric_asset (MIT, as the engine),
+  from the integration build f34698fc2a91 (tag v2026.09.19.1621-main-fabric-0.2.4).
+authors:
+  - name: K. S. Ernest (iFire) Lee
+license: MIT
+repository-code: https://github.com/V-Sekai-fire/interactor-fabric-zone
+references:
+  - type: software
+    title: entities-godot (modules/multiplayer_fabric, modules/multiplayer_fabric_asset, core/math/predictive_bvh_adapter.h)
+    repository-code: https://github.com/V-Sekai-fire/entities-godot
+    commit: f34698fc2a91e5bdf7495c626032840fe7f2a136
+    license: MIT

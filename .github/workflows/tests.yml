@@ -5,6 +5,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
 jobs:
   tests:
     runs-on: ubuntu-24.04
@@ -19,4 +20,8 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
       - name: Build and run the tests
         working-directory: tests
-        run: lake build && .lake/build/bin/tests
+        # The zone's C++ uses libstdc++, and SQLite needs a newer glibc than Lean's bundled clang
+        # links against, so the tests link with the system compiler.
+        run: |
+          export LEAN_CC=cc LIBRARY_PATH="$(lean --print-prefix)/lib"
+          lake build && .lake/build/bin/tests
