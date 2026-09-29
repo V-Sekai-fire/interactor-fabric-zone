@@ -1,0 +1,22 @@
+# The Lean tests (tests/) against the native build of the same C++ the guests compile.
+# The riscv64 guest build needs the org's sysroot and runs on a desk; see README.md.
+name: tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools from apt
+        run: sudo apt-get update -q && sudo apt-get install -y -q clang cmake ninja-build
+      - name: Lean
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Build and run the tests
+        working-directory: tests
+        run: lake build && .lake/build/bin/tests
