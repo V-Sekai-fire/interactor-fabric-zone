@@ -125,5 +125,10 @@ The gate runs `ca.elf` in a real Sandbox. It needs the godot-sandbox addon in
     godot --headless --path project --script tests/quic_gate.gd
     godot --headless --path project --script tests/zone_gate.gd
 
+All four guests are built with single-precision `real_t`, like the stock addon they are tested on. The
+engine for RFD 2287 is built with `precision=double`, and a guest's `Variant` is 24 bytes in a
+single-precision build and 40 in a double one. So once the double-precision addon exists, rebuild all
+four with `-DDOUBLE_PRECISION=ON` and rerun the three gates against it.
+
 Every check comes with a control that plants the defect and must be caught. A control that
 passes is a failure.
