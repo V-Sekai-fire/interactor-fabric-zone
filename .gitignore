@@ -1,0 +1,6 @@
+/build/
+/project/.godot/
+/project/addons/
+/project/*.elf
+/tests/.lake/
+/project/*.elf.uid

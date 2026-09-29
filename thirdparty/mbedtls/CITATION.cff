@@ -1,0 +1,14 @@
+cff-version: 1.2.0
+message: If you use this code, cite Mbed TLS.
+title: Mbed TLS 4.1.1 with TF-PSA-Crypto (vendored)
+abstract: >-
+  The crypto core and X.509 parse/write the guests use. Copied unmodified from the org's engine
+  fork (entities-godot, tag v2026.09.19.1621-main-fabric-0.2.4, thirdparty/mbedtls), which vendors
+  upstream 4.1.1; that fork's Godot-specific config directory is left out, and the guests use
+  src/mbedtls_config/ instead.
+authors:
+  - name: The Mbed TLS Contributors
+repository-code: https://github.com/Mbed-TLS/mbedtls
+commit: 0a8fda272a5a0abef3b47c91bed37185d5a726b1
+version: 4.1.1
+license: Apache-2.0
