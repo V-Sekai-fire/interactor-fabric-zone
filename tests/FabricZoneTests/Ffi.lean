@@ -23,6 +23,6 @@ namespace FabricZoneTests.Ffi
 @[extern "fzl_key_pem"] opaque keyPem : USize → IO String
 @[extern "fzl_verify"] opaque verify : @& String → @& String → @& String → UInt64 → IO UInt32
 @[extern "fzl_quic_handshake"] opaque quicHandshake :
-  @& String → @& String → @& String → @& String → @& String → @& String → @& String → IO UInt32
+  @& String → @& String → @& String → @& String → @& String → @& String → @& String → UInt8 → IO UInt32
 
 end FabricZoneTests.Ffi
