@@ -122,7 +122,35 @@ def caChecks : IO (List (String × Bool)) := do
     ("control: a CSR with a broken signature is not issued", isErr broken (-103)),
     ("control: exporting the root key is refused", exported != 0) ]
 
+def quicChecks : IO (List (String × Bool)) := do
+  let wall ← IO.Process.run { cmd := "date", args := #["+%s"] }
+  let now := wall.trim.toNat!.toUInt64
+  let ca ← Ffi.caNew (now - 3600) 86400
+  let other ← Ffi.caNew (now - 3600) 86400
+  let root ← Ffi.caRoot ca
+  let otherRoot ← Ffi.caRoot other
+  let zone := "zone-0.zone.fabric.internal"
+  let player := "player-0.zone.fabric.internal"
+  let serverKey ← Ffi.keyNew
+  let clientKey ← Ffi.keyNew
+  let serverCert ← Ffi.caIssue ca (← Ffi.keyCsr serverKey zone) zone (now - 60) 3600
+  let clientCsr ← Ffi.keyCsr clientKey player
+  let clientCert ← Ffi.caIssue ca clientCsr player (now - 60) 3600
+  let foreignCert ← Ffi.caIssue other clientCsr player (now - 60) 3600
+  let serverPem ← Ffi.keyPem serverKey
+  let clientPem ← Ffi.keyPem clientKey
+  let ok ← Ffi.quicHandshake serverCert serverPem root clientCert clientPem root zone
+  let foreign ← Ffi.quicHandshake serverCert serverPem root foreignCert clientPem root zone
+  let misled ← Ffi.quicHandshake serverCert serverPem root clientCert clientPem otherRoot zone
+  let wrongName ← Ffi.quicHandshake serverCert serverPem root clientCert clientPem root "zone-1.zone.fabric.internal"
+  pure [
+    (s!"QUIC with mutual TLS, then a WebTransport session and a datagram each way ({ok}, want 1122)", ok == 1122),
+    (s!"control: a client certificate from another CA is refused ({foreign})", foreign % 100 != 22),
+    (s!"control: a client that trusts another root refuses the zone ({misled})", misled % 100 != 22),
+    (s!"control: the wrong server name is refused ({wrongName})", wrongName % 100 != 22) ]
+
 def entropyChecks : IO (List (String × Bool)) := do
+
   Ffi.forceHost 1
   let starved ← Ffi.probe
   let fedOk ← Ffi.feed (ByteArray.mk ((List.range 32).map fun i => (mix 7 i % 251 + 1).toUInt8).toArray)
@@ -139,7 +167,7 @@ end FabricZoneTests
 
 open FabricZoneTests in
 def main : IO UInt32 := do
-  let unit := (← caChecks) ++ (← entropyChecks)
+  let unit := (← caChecks) ++ (← quicChecks) ++ (← entropyChecks)
   let mut bad := 0
   for (name, ok) in unit do
     IO.println s!"{if ok then "ok  " else "FAIL"} {name}"

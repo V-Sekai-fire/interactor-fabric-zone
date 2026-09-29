@@ -24,6 +24,11 @@ add_library(fz_ca STATIC src/ca/fz_ca.cpp src/ca/fz_entropy.cpp)
 target_include_directories(fz_ca PUBLIC src/ca)
 target_link_libraries(fz_ca PUBLIC fz_mbedtls)
 
+include(cmake/fz_picoquic.cmake)
+add_library(fz_quic STATIC src/transport/fz_quic.cpp)
+target_include_directories(fz_quic PUBLIC src/transport)
+target_link_libraries(fz_quic PUBLIC fz_picoquic fz_ca)
+
 if(NOT FZ_NATIVE)
 	function(add_guest name)
 		add_sandbox_program(${name} ${ARGN})
@@ -35,4 +40,7 @@ if(NOT FZ_NATIVE)
 
 	add_guest(ca guest/ca/main.cpp)
 	target_link_libraries(ca PRIVATE fz_ca)
+
+	add_guest(quic_peer guest/quic_peer/main.cpp)
+	target_link_libraries(quic_peer PRIVATE fz_quic)
 endif()

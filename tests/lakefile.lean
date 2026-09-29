@@ -19,7 +19,8 @@ extern_lib fabriczone_ffi pkg := do
     "-DFZ_NATIVE=ON", "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_C_COMPILER=clang",
     "-DCMAKE_CXX_COMPILER=clang++"] }
   proc { cmd := "cmake", args := #["--build", nativeDir.toString] }
-  let includes := #["-I", (← getLeanIncludeDir).toString, "-I", (root / "src" / "ca").toString]
+  let includes := #["-I", (← getLeanIncludeDir).toString, "-I", (root / "src" / "ca").toString,
+    "-I", (root / "src" / "transport").toString]
   let shim ← buildO (pkg.buildDir / "ffi" / "shim.o") (← inputTextFile (pkg.dir / "ffi" / "shim.cpp"))
     includes #["-std=c++17", "-O2", "-fPIC"] "c++"
   buildStaticLib (pkg.staticLibDir / nameToStaticLib "fabriczone_ffi") #[shim]
@@ -29,5 +30,5 @@ lean_lib FabricZoneTests
 @[default_target]
 lean_exe tests where
   root := `Main
-  moreLinkArgs := #[(nativeDir / "libfz_ca.a").toString, (nativeDir / "libfz_mbedtls.a").toString,
-    "-lm"]
+  moreLinkArgs := #[(nativeDir / "libfz_quic.a").toString, (nativeDir / "libfz_picoquic.a").toString,
+    (nativeDir / "libfz_ca.a").toString, (nativeDir / "libfz_mbedtls.a").toString, "-lpthread", "-lm"]
