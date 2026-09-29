@@ -139,15 +139,21 @@ def quicChecks : IO (List (String × Bool)) := do
   let foreignCert ← Ffi.caIssue other clientCsr player (now - 60) 3600
   let serverPem ← Ffi.keyPem serverKey
   let clientPem ← Ffi.keyPem clientKey
-  let ok ← Ffi.quicHandshake serverCert serverPem root clientCert clientPem root zone
-  let foreign ← Ffi.quicHandshake serverCert serverPem root foreignCert clientPem root zone
-  let misled ← Ffi.quicHandshake serverCert serverPem root clientCert clientPem otherRoot zone
-  let wrongName ← Ffi.quicHandshake serverCert serverPem root clientCert clientPem root "zone-1.zone.fabric.internal"
+  let ok ← Ffi.quicHandshake serverCert serverPem root clientCert clientPem root zone 0
+  let foreign ← Ffi.quicHandshake serverCert serverPem root foreignCert clientPem root zone 0
+  let misled ← Ffi.quicHandshake serverCert serverPem root clientCert clientPem otherRoot zone 0
+  let wrongName ← Ffi.quicHandshake serverCert serverPem root clientCert clientPem root "zone-1.zone.fabric.internal" 0
+  let expiredCert ← Ffi.caIssue ca clientCsr player (now - 120) 60
+  let expired ← Ffi.quicHandshake serverCert serverPem root expiredCert clientPem root zone 0
+  let tampered ← Ffi.quicHandshake serverCert serverPem root clientCert clientPem root zone 1
   pure [
-    (s!"QUIC with mutual TLS, then a WebTransport session and a datagram each way ({ok}, want 1122)", ok == 1122),
+    (s!"QUIC with mutual TLS, a WebTransport session, a datagram each way, no plaintext relayed ({ok}, want 1122)", ok == 1122),
     (s!"control: a client certificate from another CA is refused ({foreign})", foreign % 100 != 22),
     (s!"control: a client that trusts another root refuses the zone ({misled})", misled % 100 != 22),
-    (s!"control: the wrong server name is refused ({wrongName})", wrongName % 100 != 22) ]
+    (s!"control: the wrong server name is refused ({wrongName})", wrongName % 100 != 22),
+    (s!"control: an expired client certificate ends the handshake ({expired})", expired % 100 != 22),
+    (s!"control: a datagram with one flipped byte does not arrive ({tampered}, session up without the 1000)",
+      tampered % 1000 == 122) ]
 
 def entropyChecks : IO (List (String × Bool)) := do
 

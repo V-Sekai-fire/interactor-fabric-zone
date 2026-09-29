@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string.h>
 
 namespace {
 
@@ -86,10 +87,12 @@ extern "C" lean_obj_res fzl_verify(b_lean_obj_arg p_root, b_lean_obj_arg p_cert,
 // Server and client in one process, datagrams handed across in memory 5 ms after they leave (a round
 // trip of zero would make QUIC's loss timer fire the moment a packet is sent). Returns client state * 10 +
 // server state after the handshake settles or 200 rounds pass, plus 100 when the WebTransport session
-// is up at both ends, plus 1000 when a datagram then crosses each way intact.
+// is up at both ends, plus 1000 when a datagram then crosses each way intact and no relayed datagram
+// holds its bytes in the clear. With p_tamper, one byte of each client datagram is flipped once the
+// hello is queued, so it must not arrive.
 extern "C" lean_obj_res fzl_quic_handshake(b_lean_obj_arg p_server_cert, b_lean_obj_arg p_server_key,
 		b_lean_obj_arg p_server_root, b_lean_obj_arg p_client_cert, b_lean_obj_arg p_client_key,
-		b_lean_obj_arg p_client_root, b_lean_obj_arg p_server_name, lean_obj_arg) {
+		b_lean_obj_arg p_client_root, b_lean_obj_arg p_server_name, uint8_t p_tamper, lean_obj_arg) {
 	uint64_t t = 1000000;
 	fz_quic *server = fz_quic_new(1, lean_string_cstr(p_server_cert), lean_string_cstr(p_server_key),
 			lean_string_cstr(p_server_root), t);
@@ -135,6 +138,7 @@ extern "C" lean_obj_res fzl_quic_handshake(b_lean_obj_arg p_server_cert, b_lean_
 		bool sent_reply = false;
 		bool hello_ok = false;
 		bool reply_ok = false;
+		bool plaintext_seen = false;
 		for (int round = 0; result == 22 && round < 400 && !reply_ok; ++round) {
 			t += 1000;
 			if (!sent_hello && fz_quic_session(client) == FZ_WT_UP && fz_quic_session(server) == FZ_WT_UP) {
@@ -144,6 +148,10 @@ extern "C" lean_obj_res fzl_quic_handshake(b_lean_obj_arg p_server_cert, b_lean_
 				fz_quic_prepare(client, t, datagram, sizeof datagram, &count, &to_ip, &to_port);
 				if (count == 0) {
 					break;
+				}
+				plaintext_seen = plaintext_seen || memmem(datagram, count, "hello", 5) != nullptr;
+				if (p_tamper && sent_hello) {
+					datagram[count - 1] ^= 0x01;
 				}
 				fz_quic_incoming(server, datagram, count, ip, 50000, ip, 4433, t + 5000);
 			}
@@ -158,6 +166,7 @@ extern "C" lean_obj_res fzl_quic_handshake(b_lean_obj_arg p_server_cert, b_lean_
 				if (count == 0) {
 					break;
 				}
+				plaintext_seen = plaintext_seen || memmem(datagram, count, "hello", 5) != nullptr;
 				fz_quic_incoming(client, datagram, count, ip, 4433, ip, 50000, t + 5000);
 			}
 			t += 5000;
@@ -167,7 +176,7 @@ extern "C" lean_obj_res fzl_quic_handshake(b_lean_obj_arg p_server_cert, b_lean_
 		if (fz_quic_session(client) == FZ_WT_UP && fz_quic_session(server) == FZ_WT_UP) {
 			result += 100;
 		}
-		if (hello_ok && reply_ok) {
+		if (hello_ok && reply_ok && !plaintext_seen) {
 			result += 1000;
 		}
 	}
