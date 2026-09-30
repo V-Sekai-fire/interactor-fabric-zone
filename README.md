@@ -109,9 +109,10 @@ uses:
       -DCMAKE_TOOLCHAIN_FILE=<riscv64-sysroot>/toolchain.cmake
     cmake --build build/guest        # writes project/ca.elf, quic_peer.elf, zone.elf and asset.elf
 
-The Lean tests build the host copy themselves, and link with the system compiler. CI runs them.
+The Lean tests build the host copy themselves, and link with the system compiler, crt and libraries
+(on Ubuntu 24.04: `libc++-18-dev libc++abi-18-dev libgmp-dev libuv1-dev`). CI runs them.
 
-    cd tests && LEAN_CC=cc LIBRARY_PATH=$(lean --print-prefix)/lib lake build && .lake/build/bin/tests
+    cd tests && LEAN_CC=cc LIBRARY_PATH=/usr/lib/llvm-18/lib lake build && .lake/build/bin/tests
 
 The zone and asset properties search seeds 0 to 199, so a defect has to touch more than about 1.5%
 of seeds to be seen. The single-owner property means at most one zone owns the entity, and one
