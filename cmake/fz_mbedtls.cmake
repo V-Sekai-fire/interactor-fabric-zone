@@ -7,7 +7,8 @@ set(FZ_PSA_SOURCES
 	drivers/builtin/src/aes.c drivers/builtin/src/aria.c drivers/builtin/src/bignum.c
 	drivers/builtin/src/bignum_core.c drivers/builtin/src/bignum_mod.c drivers/builtin/src/bignum_mod_raw.c
 	drivers/builtin/src/block_cipher.c drivers/builtin/src/camellia.c drivers/builtin/src/ccm.c
-	drivers/builtin/src/chacha20.c drivers/builtin/src/chachapoly.c drivers/builtin/src/cipher.c
+	drivers/builtin/src/chacha20.c drivers/builtin/src/chacha20_neon.c drivers/builtin/src/chachapoly.c
+	drivers/builtin/src/cipher.c
 	drivers/builtin/src/cipher_wrap.c drivers/builtin/src/cmac.c drivers/builtin/src/ctr_drbg.c
 	drivers/builtin/src/ecdsa.c drivers/builtin/src/ecjpake.c drivers/builtin/src/ecp.c
 	drivers/builtin/src/ecp_curves.c drivers/builtin/src/ecp_curves_new.c drivers/builtin/src/entropy.c

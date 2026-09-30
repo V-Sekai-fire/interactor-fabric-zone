@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: MIT
 import PlausibleWitnessDag
 import FabricZoneTests.Ffi
+import FabricZoneTests.Zone
 
 /-!
 # Tests for the session CA (src/ca)
@@ -185,5 +186,6 @@ def main : IO UInt32 := do
   let controlOk := match control.outcome with | .found _ => true | _ => false
   IO.println s!"{if realOk && controlOk then "ok  " else "FAIL"} {label}: real {repr real.outcome}, control {repr control.outcome}"
   unless realOk && controlOk do bad := bad + 1
+  bad := bad + (← FabricZoneTests.Zone.run)
   IO.println s!"RESULT: {if bad == 0 then "PASS" else s!"FAIL ({bad})"}"
   return (if bad == 0 then 0 else 1)
