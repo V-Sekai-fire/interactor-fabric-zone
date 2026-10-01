@@ -23,6 +23,8 @@ endif()
 add_library(fz_ca STATIC src/ca/fz_ca.cpp src/ca/fz_entropy.cpp)
 target_include_directories(fz_ca PUBLIC src/ca)
 target_link_libraries(fz_ca PUBLIC fz_mbedtls)
+# mbedTLS's entropy poll calls back into fz_entropy.cpp, so the two archives link as a cycle.
+target_link_libraries(fz_mbedtls PUBLIC fz_ca)
 if(WIN32)
 	target_link_libraries(fz_ca PUBLIC bcrypt)
 endif()
