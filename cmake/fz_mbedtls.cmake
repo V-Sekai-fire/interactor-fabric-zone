@@ -47,3 +47,6 @@ target_include_directories(fz_mbedtls PRIVATE
 	${FZ_MBEDTLS}/library ${FZ_PSA}/core ${FZ_PSA}/drivers/builtin/src ${FZ_PSA}/platform
 	${FZ_PSA}/utilities ${FZ_PSA}/extras ${FZ_PSA}/dispatch)
 target_compile_options(fz_mbedtls PRIVATE -w)
+if(WIN32)
+	target_link_libraries(fz_mbedtls PUBLIC ws2_32)
+endif()

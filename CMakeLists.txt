@@ -23,6 +23,9 @@ endif()
 add_library(fz_ca STATIC src/ca/fz_ca.cpp src/ca/fz_entropy.cpp)
 target_include_directories(fz_ca PUBLIC src/ca)
 target_link_libraries(fz_ca PUBLIC fz_mbedtls)
+if(WIN32)
+	target_link_libraries(fz_ca PUBLIC bcrypt)
+endif()
 
 include(cmake/fz_picoquic.cmake)
 add_library(fz_quic STATIC src/transport/fz_quic.cpp)
@@ -41,6 +44,11 @@ add_library(fz_zone STATIC src/transport/loopback.cpp src/transport/frame_transp
 	src/zone/zone_core.cpp src/zone/zone.cpp src/zone/pose.cpp src/zone/journal.cpp)
 target_include_directories(fz_zone PUBLIC src ${CMAKE_SOURCE_DIR})
 target_link_libraries(fz_zone PUBLIC fz_zone_third)
+
+if(FZ_NATIVE)
+	add_executable(fz_offline_ca tools/offline_ca/main.cpp)
+	target_link_libraries(fz_offline_ca PRIVATE fz_ca)
+endif()
 
 if(NOT FZ_NATIVE)
 	function(add_guest name)
