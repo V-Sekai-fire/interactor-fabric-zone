@@ -30,6 +30,25 @@ issues only `<label>.fdb.fabric.internal` names, for FoundationDB peers, under t
 limit, and the tests check RFC 9180's published P-256 vectors: `ikmE` gives `pkEm`, and `ikmR`
 gives `pkRm`.
 
+Certificates carry subject and authority key identifiers. Every offline root has the same subject,
+so without them a trust store holding two roots, as in a rotation, makes OpenSSL pick one root for
+both and refuse the other's certificates.
+
+On a desk, `tools/offline_ca.exs` keeps the seed under `weftspun.fabric-zone` / `offline-ca-root`
+and drives `fz_offline_ca`, which takes the seed on stdin and builds natively on Windows with MinGW.
+`init` stores a new seed and refuses if one exists. `issue LABEL DIR` refuses if none exists, so a
+deleted seed is never replaced in silence. `fdb-e2e DIR` runs FoundationDB 7.3 on 127.0.0.1:4690
+over TLS, trusting only the stored root. Its controls:
+
+- A client signed by another seed's root is refused.
+- An expired client is refused.
+- A `.zone.fabric.internal` name, an `fdb-*.chibifire.com` name and a lifetime over the hour are not
+  issued.
+
+`--control=trust-other-root` makes the server trust the other root too, so that row must fail.
+`--self-test` runs RFC 9180's `ikmE` vector through the binary and checks the store's refusals
+against `Keychain.Mock`.
+
 ## The transport (`quic_peer.elf`)
 
 QUIC with mutual TLS, a WebTransport session over HTTP/3 on the path `/zone`, and datagrams on

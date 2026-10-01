@@ -7,7 +7,12 @@
 
 #include <errno.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#include <bcrypt.h>
+#else
 #include <sys/random.h>
+#endif
 
 namespace {
 
@@ -23,6 +28,9 @@ bool os_draw(unsigned char *r_out, size_t p_count) {
 	if (g_force_host) {
 		return false;
 	}
+#ifdef _WIN32
+	return BCryptGenRandom(nullptr, r_out, ULONG(p_count), BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
+#else
 	size_t got = 0;
 	while (got < p_count) {
 		ssize_t n = getrandom(r_out + got, p_count - got, 0);
@@ -38,6 +46,7 @@ bool os_draw(unsigned char *r_out, size_t p_count) {
 		got += size_t(n);
 	}
 	return true;
+#endif
 }
 
 bool host_draw(unsigned char *r_out, size_t p_count) {

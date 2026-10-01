@@ -14,6 +14,10 @@
 #include <string.h>
 #include <time.h>
 
+#ifdef _WIN32
+#define timegm _mkgmtime
+#endif
+
 struct fz_ca {
 	mbedtls_svc_key_id_t key_id;
 	mbedtls_pk_context pk;
@@ -139,7 +143,7 @@ mbedtls_svc_key_id_t derive_key(const unsigned char *p_seed, size_t p_seed_len) 
 bool utc_stamp(int64_t p_unix, char *r_out) {
 	time_t t = time_t(p_unix);
 	struct tm tm_utc;
-	if (gmtime_r(&t, &tm_utc) == nullptr) {
+	if (mbedtls_platform_gmtime_r(&t, &tm_utc) == nullptr) {
 		return false;
 	}
 	return strftime(r_out, 16, "%Y%m%d%H%M%S", &tm_utc) == 14;
@@ -237,6 +241,7 @@ fz_ca *new_ca(mbedtls_svc_key_id_t p_key, const char *p_subject, const char *p_s
 			mbedtls_x509write_crt_set_issuer_name(&writer, p_subject) == 0 &&
 			mbedtls_x509write_crt_set_basic_constraints(&writer, 1, 0) == 0 &&
 			mbedtls_x509write_crt_set_key_usage(&writer, MBEDTLS_X509_KU_KEY_CERT_SIGN | MBEDTLS_X509_KU_CRL_SIGN) == 0 &&
+			mbedtls_x509write_crt_set_subject_key_identifier(&writer) == 0 &&
 			write_cert(&writer, ca->root_pem, sizeof ca->root_pem) > 0;
 	mbedtls_x509write_crt_free(&writer);
 	if (!ok) {
@@ -352,6 +357,8 @@ extern "C" int fz_ca_issue(fz_ca *p_ca, const char *p_csr_pem, const char *p_nam
 				mbedtls_x509write_crt_set_issuer_name(&writer, p_ca->subject) == 0 &&
 				mbedtls_x509write_crt_set_basic_constraints(&writer, 0, -1) == 0 &&
 				mbedtls_x509write_crt_set_key_usage(&writer, MBEDTLS_X509_KU_DIGITAL_SIGNATURE) == 0 &&
+				mbedtls_x509write_crt_set_subject_key_identifier(&writer) == 0 &&
+				mbedtls_x509write_crt_set_authority_key_identifier(&writer) == 0 &&
 				mbedtls_x509write_crt_set_subject_alternative_name(&writer, &san) == 0;
 		ret = ok ? write_cert(&writer, r_out, p_capacity) : FZ_ERR_CRYPTO;
 	}

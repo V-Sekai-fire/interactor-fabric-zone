@@ -25,3 +25,23 @@ jobs:
         run: |
           export LEAN_CC=cc LIBRARY_PATH=/usr/lib/llvm-18/lib
           lake build && .lake/build/bin/tests
+  offline-ca-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: UCRT64
+          update: false
+          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-make
+      - name: MinGW on PATH
+        shell: pwsh
+        run: echo "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin" >> $env:GITHUB_PATH
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          elixir-version: "1.18"
+      - name: fz_offline_ca against RFC 9180, and the store's refusals
+        run: elixir tools/offline_ca.exs --self-test
