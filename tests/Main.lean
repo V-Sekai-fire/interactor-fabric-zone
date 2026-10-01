@@ -156,6 +156,61 @@ def quicChecks : IO (List (String × Bool)) := do
     (s!"control: a datagram with one flipped byte does not arrive ({tampered}, session up without the 1000)",
       tampered % 1000 == 122) ]
 
+def hexByte (c : Char) : UInt8 :=
+  if c.isDigit then (c.toNat - '0'.toNat).toUInt8 else (c.toNat - 'a'.toNat + 10).toUInt8
+
+def hexBytes (s : String) : ByteArray := Id.run do
+  let cs := s.toList.toArray
+  let mut out := ByteArray.empty
+  for i in [0:cs.size / 2] do
+    out := out.push (hexByte cs[2 * i]! * 16 + hexByte cs[2 * i + 1]!)
+  return out
+
+-- RFC 9180 Appendix A.3, DHKEM(P-256, HKDF-SHA256): ikmE and ikmR with the public keys DeriveKeyPair gives.
+def ikmE : String := "4270e54ffd08d79d5928020af4686d8f6b7d35dbe470265f1f5aa22816ce860e"
+def pkEm : String := "04a92719c6195d5085104f469a8b9814d5838ff72b60501e2c4466e5e67b325ac98536d7b61a1af4b78e5b7f951c0900be863c403ce65c9bfcb9382657222d18c4"
+def ikmR : String := "668b37171f1072f3cf12ea8a236a45df23fc13b82af3609ad1e354f6ef817550"
+def pkRm : String := "04fe8c19ce0905191ebc298a9245792531f26f0cece2460639e8bc39cb7f706a826a779b4cf969b8a0e539c7f62fb3d30ad6aa8f80e30f1d128aafd68a2ce72ea0"
+
+def offlineChecks : IO (List (String × Bool)) := do
+  let wall ← IO.Process.run { cmd := "date", args := #["+%s"] }
+  let now := wall.trim.toNat!.toUInt64
+  let seed := hexBytes ikmE
+  let flipped := seed.set! 0 (seed.get! 0 ^^^ 1)
+  let a ← Ffi.caNewSeeded seed (now - 3600) 86400
+  let b ← Ffi.caNewSeeded seed (now - 60) 86400
+  let r ← Ffi.caNewSeeded (hexBytes ikmR) (now - 3600) 86400
+  let f ← Ffi.caNewSeeded flipped (now - 3600) 86400
+  let short ← Ffi.caNewSeeded (seed.extract 0 31) (now - 3600) 86400
+  let session ← Ffi.caNew (now - 3600) 86400
+  let pubA ← Ffi.caRootPublicHex a
+  let pubB ← Ffi.caRootPublicHex b
+  let pubR ← Ffi.caRootPublicHex r
+  let pubF ← Ffi.caRootPublicHex f
+  let rootB ← Ffi.caRoot b
+  let rootR ← Ffi.caRoot r
+  let key ← Ffi.keyNew
+  let peer := "cluster-0.fdb.fabric.internal"
+  let csr ← Ffi.keyCsr key peer
+  let cert ← Ffi.caIssue a csr peer (now - 60) 3600
+  let laterRun ← Ffi.verify rootB cert peer now
+  let otherSeed ← Ffi.verify rootR cert peer now
+  let zoneName ← Ffi.caIssue a csr "zone-0.zone.fabric.internal" now 60
+  let fdbFromSession ← Ffi.caIssue session csr peer now 60
+  let exported ← Ffi.caExport a
+  pure [
+    ("RFC 9180 DeriveKeyPair: ikmE gives pkEm", pubA == pkEm),
+    ("RFC 9180 DeriveKeyPair: ikmR gives pkRm", pubR == pkRm),
+    ("the same seed gives the same root key in another run", pubB == pkEm),
+    ("control: one flipped seed bit gives another key", pubF.length == pkEm.length && pubF != pkEm),
+    ("a certificate from one run verifies against the root another run made from the same seed", laterRun == 0),
+    ("control: the root from a different seed refuses it", has otherSeed chainBit),
+    ("control: a 31-byte seed makes no CA", short == 0),
+    ("the offline root issues an FDB peer name", cert.startsWith "-----BEGIN CERTIFICATE-----"),
+    ("control: the offline root does not issue a zone name", isErr zoneName (-100)),
+    ("control: the session root does not issue an FDB peer name", isErr fdbFromSession (-100)),
+    ("control: exporting the offline root key is refused", exported != 0) ]
+
 def entropyChecks : IO (List (String × Bool)) := do
 
   Ffi.forceHost 1
@@ -174,7 +229,7 @@ end FabricZoneTests
 
 open FabricZoneTests in
 def main : IO UInt32 := do
-  let unit := (← caChecks) ++ (← quicChecks) ++ (← entropyChecks)
+  let unit := (← caChecks) ++ (← quicChecks) ++ (← offlineChecks) ++ (← entropyChecks)
   let mut bad := 0
   for (name, ok) in unit do
     IO.println s!"{if ok then "ok  " else "FAIL"} {name}"

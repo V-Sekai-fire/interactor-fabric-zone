@@ -21,6 +21,15 @@ and the certificates the CA issues.
 Source: `src/ca/` (the C API in `fz_ca.h`) and `guest/ca/main.cpp`. The mbedTLS configuration is
 in `src/mbedtls_config/`: X.509 and the crypto core only, with no files, threads or sockets.
 
+## The offline root (`fz_ca_new_seeded`)
+
+The same 32-byte seed always gives the same root key, by RFC 9180's DeriveKeyPair for
+DHKEM(P-256, HKDF-SHA256). The scalar is imported without export permission. The seed lives in the
+operating system's secret store through `contract-keychain`, never in a repository. This root
+issues only `<label>.fdb.fabric.internal` names, for FoundationDB peers, under the same one-hour
+limit, and the tests check RFC 9180's published P-256 vectors: `ikmE` gives `pkEm`, and `ikmR`
+gives `pkRm`.
+
 ## The transport (`quic_peer.elf`)
 
 QUIC with mutual TLS, a WebTransport session over HTTP/3 on the path `/zone`, and datagrams on

@@ -15,7 +15,9 @@ namespace FabricZoneTests.Ffi
 @[extern "fzl_feed"] opaque feed : @& ByteArray → IO UInt32
 @[extern "fzl_name_allowed"] opaque nameAllowed : @& String → UInt8
 @[extern "fzl_ca_new"] opaque caNew : UInt64 → UInt64 → IO USize
+@[extern "fzl_ca_new_seeded"] opaque caNewSeeded : @& ByteArray → UInt64 → UInt64 → IO USize
 @[extern "fzl_ca_root"] opaque caRoot : USize → IO String
+@[extern "fzl_ca_root_public_hex"] opaque caRootPublicHex : USize → IO String
 @[extern "fzl_ca_export"] opaque caExport : USize → IO UInt32
 @[extern "fzl_ca_issue"] opaque caIssue : USize → @& String → @& String → UInt64 → UInt64 → IO String
 @[extern "fzl_key_new"] opaque keyNew : IO USize

@@ -5,6 +5,7 @@
 
 #include <mbedtls/md.h>
 #include <mbedtls/pk.h>
+#include <mbedtls/platform_util.h>
 #include <mbedtls/x509_crt.h>
 #include <mbedtls/x509_csr.h>
 #include <psa/crypto.h>
@@ -16,6 +17,8 @@
 struct fz_ca {
 	mbedtls_svc_key_id_t key_id;
 	mbedtls_pk_context pk;
+	const char *subject;
+	const char *suffix;
 	char root_pem[4096];
 };
 
@@ -27,8 +30,15 @@ struct fz_key {
 namespace {
 
 const char *kRootSubject = "CN=fabric zone session root";
+const char *kOfflineSubject = "CN=fabric zone offline root";
 
-mbedtls_svc_key_id_t make_key(bool p_exportable) {
+// RFC 9180 DHKEM(P-256, HKDF-SHA256): suite_id is "KEM" || I2OSP(0x0010, 2), and the P-256 order.
+const uint8_t kHpkeVersion[] = { 'H', 'P', 'K', 'E', '-', 'v', '1' };
+const uint8_t kSuiteId[] = { 'K', 'E', 'M', 0x00, 0x10 };
+const uint8_t kP256Order[32] = { 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	0xff, 0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84, 0xf3, 0xb9, 0xca, 0xc2, 0xfc, 0x63, 0x25, 0x51 };
+
+psa_key_attributes_t key_attributes(bool p_exportable) {
 	psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
 	psa_set_key_type(&attributes, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
 	psa_set_key_bits(&attributes, 256);
@@ -38,10 +48,91 @@ mbedtls_svc_key_id_t make_key(bool p_exportable) {
 	}
 	psa_set_key_usage_flags(&attributes, usage);
 	psa_set_key_algorithm(&attributes, PSA_ALG_DETERMINISTIC_ECDSA(PSA_ALG_ANY_HASH));
+	return attributes;
+}
+
+mbedtls_svc_key_id_t make_key(bool p_exportable) {
+	psa_key_attributes_t attributes = key_attributes(p_exportable);
 	mbedtls_svc_key_id_t id = MBEDTLS_SVC_KEY_ID_INIT;
 	if (psa_generate_key(&attributes, &id) != PSA_SUCCESS) {
 		return MBEDTLS_SVC_KEY_ID_INIT;
 	}
+	return id;
+}
+
+size_t append(uint8_t *r_out, size_t p_at, const void *p_bytes, size_t p_count) {
+	memcpy(r_out + p_at, p_bytes, p_count);
+	return p_at + p_count;
+}
+
+bool hkdf_extract(const uint8_t *p_ikm, size_t p_ikm_len, uint8_t r_prk[32]) {
+	psa_key_derivation_operation_t op = PSA_KEY_DERIVATION_OPERATION_INIT;
+	bool ok = psa_key_derivation_setup(&op, PSA_ALG_HKDF_EXTRACT(PSA_ALG_SHA_256)) == PSA_SUCCESS &&
+			psa_key_derivation_input_bytes(&op, PSA_KEY_DERIVATION_INPUT_SALT, nullptr, 0) == PSA_SUCCESS &&
+			psa_key_derivation_input_bytes(&op, PSA_KEY_DERIVATION_INPUT_SECRET, p_ikm, p_ikm_len) == PSA_SUCCESS &&
+			psa_key_derivation_output_bytes(&op, r_prk, 32) == PSA_SUCCESS;
+	psa_key_derivation_abort(&op);
+	return ok;
+}
+
+bool hkdf_expand(const uint8_t p_prk[32], const uint8_t *p_info, size_t p_info_len, uint8_t *r_out, size_t p_len) {
+	psa_key_derivation_operation_t op = PSA_KEY_DERIVATION_OPERATION_INIT;
+	bool ok = psa_key_derivation_setup(&op, PSA_ALG_HKDF_EXPAND(PSA_ALG_SHA_256)) == PSA_SUCCESS &&
+			psa_key_derivation_input_bytes(&op, PSA_KEY_DERIVATION_INPUT_SECRET, p_prk, 32) == PSA_SUCCESS &&
+			psa_key_derivation_input_bytes(&op, PSA_KEY_DERIVATION_INPUT_INFO, p_info, p_info_len) == PSA_SUCCESS &&
+			psa_key_derivation_output_bytes(&op, r_out, p_len) == PSA_SUCCESS;
+	psa_key_derivation_abort(&op);
+	return ok;
+}
+
+// RFC 9180 section 7.1.3 DeriveKeyPair for P-256: rejection sampling over LabeledExpand candidates.
+bool derive_p256_scalar(const uint8_t *p_ikm, size_t p_ikm_len, uint8_t r_sk[32]) {
+	static const uint8_t kDkpPrk[] = { 'd', 'k', 'p', '_', 'p', 'r', 'k' };
+	static const uint8_t kCandidate[] = { 'c', 'a', 'n', 'd', 'i', 'd', 'a', 't', 'e' };
+	uint8_t labeled_ikm[sizeof kHpkeVersion + sizeof kSuiteId + sizeof kDkpPrk + FZ_SEED_BYTES];
+	size_t n = append(labeled_ikm, 0, kHpkeVersion, sizeof kHpkeVersion);
+	n = append(labeled_ikm, n, kSuiteId, sizeof kSuiteId);
+	n = append(labeled_ikm, n, kDkpPrk, sizeof kDkpPrk);
+	n = append(labeled_ikm, n, p_ikm, p_ikm_len);
+	uint8_t prk[32];
+	bool found = false;
+	if (hkdf_extract(labeled_ikm, n, prk)) {
+		const uint8_t length[2] = { 0x00, 32 };
+		uint8_t info[sizeof length + sizeof kHpkeVersion + sizeof kSuiteId + sizeof kCandidate + 1];
+		size_t m = append(info, 0, length, sizeof length);
+		m = append(info, m, kHpkeVersion, sizeof kHpkeVersion);
+		m = append(info, m, kSuiteId, sizeof kSuiteId);
+		m = append(info, m, kCandidate, sizeof kCandidate);
+		for (int counter = 0; counter <= 255 && !found; ++counter) {
+			info[m] = uint8_t(counter);
+			if (!hkdf_expand(prk, info, m + 1, r_sk, 32)) {
+				break;
+			}
+			bool zero = true;
+			for (int i = 0; i < 32; ++i) {
+				zero = zero && r_sk[i] == 0;
+			}
+			found = !zero && memcmp(r_sk, kP256Order, 32) < 0;
+		}
+	}
+	mbedtls_platform_zeroize(labeled_ikm, sizeof labeled_ikm);
+	mbedtls_platform_zeroize(prk, sizeof prk);
+	return found;
+}
+
+mbedtls_svc_key_id_t derive_key(const unsigned char *p_seed, size_t p_seed_len) {
+	if (p_seed == nullptr || p_seed_len != FZ_SEED_BYTES) {
+		return MBEDTLS_SVC_KEY_ID_INIT;
+	}
+	uint8_t sk[32];
+	mbedtls_svc_key_id_t id = MBEDTLS_SVC_KEY_ID_INIT;
+	if (derive_p256_scalar(p_seed, p_seed_len, sk)) {
+		psa_key_attributes_t attributes = key_attributes(false);
+		if (psa_import_key(&attributes, sk, sizeof sk, &id) != PSA_SUCCESS) {
+			id = MBEDTLS_SVC_KEY_ID_INIT;
+		}
+	}
+	mbedtls_platform_zeroize(sk, sizeof sk);
 	return id;
 }
 
@@ -101,39 +192,36 @@ int clear_time_flags(void *, mbedtls_x509_crt *, int, uint32_t *r_flags) {
 	return 0;
 }
 
-} // namespace
-
-extern "C" int fz_crypto_init(void) {
-	return int(psa_crypto_init());
-}
-
-// One DNS label of lowercase letters, digits and inner hyphens, then exactly FZ_NAME_SUFFIX.
-extern "C" int fz_name_allowed(const char *p_name) {
+// One DNS label of lowercase letters, digits and inner hyphens, then exactly p_suffix.
+bool name_allowed(const char *p_name, const char *p_suffix) {
 	if (p_name == nullptr) {
-		return 0;
+		return false;
 	}
 	size_t n = strlen(p_name);
-	size_t suffix = strlen(FZ_NAME_SUFFIX);
-	if (n <= suffix || strcmp(p_name + n - suffix, FZ_NAME_SUFFIX) != 0) {
-		return 0;
+	size_t suffix = strlen(p_suffix);
+	if (n <= suffix || strcmp(p_name + n - suffix, p_suffix) != 0) {
+		return false;
 	}
 	size_t label = n - suffix;
 	if (label > 63 || p_name[0] == '-' || p_name[label - 1] == '-') {
-		return 0;
+		return false;
 	}
 	for (size_t i = 0; i < label; ++i) {
 		if (!label_char(p_name[i])) {
-			return 0;
+			return false;
 		}
 	}
-	return 1;
+	return true;
 }
 
-extern "C" fz_ca *fz_ca_new(int64_t p_not_before, int64_t p_seconds) {
+fz_ca *new_ca(mbedtls_svc_key_id_t p_key, const char *p_subject, const char *p_suffix, int64_t p_not_before,
+		int64_t p_seconds) {
 	fz_ca *ca = new fz_ca;
 	memset(ca->root_pem, 0, sizeof ca->root_pem);
 	mbedtls_pk_init(&ca->pk);
-	ca->key_id = make_key(false);
+	ca->key_id = p_key;
+	ca->subject = p_subject;
+	ca->suffix = p_suffix;
 	if (mbedtls_svc_key_id_is_null(ca->key_id) || mbedtls_pk_wrap_psa(&ca->pk, ca->key_id) != 0) {
 		fz_ca_free(ca);
 		return nullptr;
@@ -145,8 +233,8 @@ extern "C" fz_ca *fz_ca_new(int64_t p_not_before, int64_t p_seconds) {
 	mbedtls_x509write_crt_set_subject_key(&writer, &ca->pk);
 	mbedtls_x509write_crt_set_issuer_key(&writer, &ca->pk);
 	bool ok = set_serial_and_validity(&writer, p_not_before, p_seconds) == 0 &&
-			mbedtls_x509write_crt_set_subject_name(&writer, kRootSubject) == 0 &&
-			mbedtls_x509write_crt_set_issuer_name(&writer, kRootSubject) == 0 &&
+			mbedtls_x509write_crt_set_subject_name(&writer, p_subject) == 0 &&
+			mbedtls_x509write_crt_set_issuer_name(&writer, p_subject) == 0 &&
 			mbedtls_x509write_crt_set_basic_constraints(&writer, 1, 0) == 0 &&
 			mbedtls_x509write_crt_set_key_usage(&writer, MBEDTLS_X509_KU_KEY_CERT_SIGN | MBEDTLS_X509_KU_CRL_SIGN) == 0 &&
 			write_cert(&writer, ca->root_pem, sizeof ca->root_pem) > 0;
@@ -156,6 +244,29 @@ extern "C" fz_ca *fz_ca_new(int64_t p_not_before, int64_t p_seconds) {
 		return nullptr;
 	}
 	return ca;
+}
+
+} // namespace
+
+extern "C" int fz_crypto_init(void) {
+	return int(psa_crypto_init());
+}
+
+extern "C" int fz_name_allowed(const char *p_name) {
+	return name_allowed(p_name, FZ_NAME_SUFFIX) ? 1 : 0;
+}
+
+extern "C" fz_ca *fz_ca_new(int64_t p_not_before, int64_t p_seconds) {
+	return new_ca(make_key(false), kRootSubject, FZ_NAME_SUFFIX, p_not_before, p_seconds);
+}
+
+extern "C" fz_ca *fz_ca_new_seeded(const unsigned char *p_seed, size_t p_seed_len, int64_t p_not_before,
+		int64_t p_seconds) {
+	mbedtls_svc_key_id_t key = derive_key(p_seed, p_seed_len);
+	if (mbedtls_svc_key_id_is_null(key)) {
+		return nullptr;
+	}
+	return new_ca(key, kOfflineSubject, FZ_FDB_NAME_SUFFIX, p_not_before, p_seconds);
 }
 
 extern "C" void fz_ca_free(fz_ca *p_ca) {
@@ -176,6 +287,22 @@ extern "C" int fz_ca_root_pem(const fz_ca *p_ca, char *r_out, size_t p_capacity)
 	return int(n);
 }
 
+// The root's public point, uncompressed, in lowercase hex (the RFC 9180 test vectors' form).
+extern "C" int fz_ca_root_public_hex(const fz_ca *p_ca, char *r_out, size_t p_capacity) {
+	uint8_t point[65];
+	size_t length = 0;
+	if (psa_export_public_key(p_ca->key_id, point, sizeof point, &length) != PSA_SUCCESS) {
+		return FZ_ERR_CRYPTO;
+	}
+	if (length * 2 + 1 > p_capacity) {
+		return FZ_ERR_BUFFER;
+	}
+	for (size_t i = 0; i < length; ++i) {
+		snprintf(r_out + 2 * i, 3, "%02x", point[i]);
+	}
+	return int(length * 2);
+}
+
 // The root key's policy has no export usage; this returns the PSA status of trying anyway.
 extern "C" int fz_ca_export_root_key(const fz_ca *p_ca) {
 	unsigned char buffer[256];
@@ -185,7 +312,7 @@ extern "C" int fz_ca_export_root_key(const fz_ca *p_ca) {
 
 extern "C" int fz_ca_issue(fz_ca *p_ca, const char *p_csr_pem, const char *p_name, int64_t p_not_before,
 		int64_t p_seconds, char *r_out, size_t p_capacity) {
-	if (!fz_name_allowed(p_name)) {
+	if (!name_allowed(p_name, p_ca->suffix)) {
 		return FZ_ERR_NAME;
 	}
 	if (p_seconds <= 0 || p_seconds > FZ_MAX_SECONDS) {
@@ -222,7 +349,7 @@ extern "C" int fz_ca_issue(fz_ca *p_ca, const char *p_csr_pem, const char *p_nam
 	int ret = set_serial_and_validity(&writer, p_not_before, p_seconds);
 	if (ret == 0) {
 		bool ok = mbedtls_x509write_crt_set_subject_name(&writer, subject) == 0 &&
-				mbedtls_x509write_crt_set_issuer_name(&writer, kRootSubject) == 0 &&
+				mbedtls_x509write_crt_set_issuer_name(&writer, p_ca->subject) == 0 &&
 				mbedtls_x509write_crt_set_basic_constraints(&writer, 0, -1) == 0 &&
 				mbedtls_x509write_crt_set_key_usage(&writer, MBEDTLS_X509_KU_DIGITAL_SIGNATURE) == 0 &&
 				mbedtls_x509write_crt_set_subject_alternative_name(&writer, &san) == 0;
