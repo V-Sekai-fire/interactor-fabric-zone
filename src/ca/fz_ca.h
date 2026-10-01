@@ -37,6 +37,8 @@ enum {
 
 #define FZ_MAX_SECONDS 3600
 #define FZ_NAME_SUFFIX ".zone.fabric.internal"
+#define FZ_FDB_NAME_SUFFIX ".fdb.fabric.internal"
+#define FZ_SEED_BYTES 32
 
 typedef struct fz_ca fz_ca;
 typedef struct fz_key fz_key;
@@ -53,8 +55,12 @@ int fz_crypto_init(void);
 int fz_name_allowed(const char *p_name);
 
 fz_ca *fz_ca_new(int64_t p_not_before, int64_t p_seconds);
+// The offline root: RFC 9180 DeriveKeyPair (DHKEM(P-256, HKDF-SHA256)) turns the same FZ_SEED_BYTES seed
+// into the same non-exportable key; the CA issues only FZ_FDB_NAME_SUFFIX names. Other lengths make no CA.
+fz_ca *fz_ca_new_seeded(const unsigned char *p_seed, size_t p_seed_len, int64_t p_not_before, int64_t p_seconds);
 void fz_ca_free(fz_ca *p_ca);
 int fz_ca_root_pem(const fz_ca *p_ca, char *r_out, size_t p_capacity);
+int fz_ca_root_public_hex(const fz_ca *p_ca, char *r_out, size_t p_capacity);
 int fz_ca_issue(fz_ca *p_ca, const char *p_csr_pem, const char *p_name, int64_t p_not_before, int64_t p_seconds,
 		char *r_out, size_t p_capacity);
 int fz_ca_export_root_key(const fz_ca *p_ca);

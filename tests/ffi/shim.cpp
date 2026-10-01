@@ -52,8 +52,19 @@ extern "C" lean_obj_res fzl_ca_new(uint64_t p_not_before, uint64_t p_seconds, le
 	return lean_io_result_mk_ok(lean_box_usize(reinterpret_cast<size_t>(ca)));
 }
 
+extern "C" lean_obj_res fzl_ca_new_seeded(b_lean_obj_arg p_seed, uint64_t p_not_before, uint64_t p_seconds,
+		lean_obj_arg) {
+	fz_ca *ca = fz_ca_new_seeded(lean_sarray_cptr(p_seed), lean_sarray_size(p_seed), int64_t(p_not_before),
+			int64_t(p_seconds));
+	return lean_io_result_mk_ok(lean_box_usize(reinterpret_cast<size_t>(ca)));
+}
+
 extern "C" lean_obj_res fzl_ca_root(size_t p_ca, lean_obj_arg) {
 	return pem_or_code(fz_ca_root_pem(reinterpret_cast<fz_ca *>(p_ca), g_buffer, sizeof g_buffer));
+}
+
+extern "C" lean_obj_res fzl_ca_root_public_hex(size_t p_ca, lean_obj_arg) {
+	return pem_or_code(fz_ca_root_public_hex(reinterpret_cast<fz_ca *>(p_ca), g_buffer, sizeof g_buffer));
 }
 
 extern "C" lean_obj_res fzl_ca_export(size_t p_ca, lean_obj_arg) {
