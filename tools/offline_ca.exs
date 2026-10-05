@@ -146,18 +146,31 @@ defmodule SealStore do
   @envelope_header "fabric-zone offline-ca envelope v1"
   @creds_name "fabric-zone.offline-ca-root"
   @creds_accept %{
-    "host+tpm2" => ["ef4ac13679a9480ea7db68897f9f165d", "adbc4ca3efb64201ba881b6f2e4095ea"],
+    "host+tpm2" => [
+      "ef4ac13679a9480ea7db68897f9f165d",
+      "adbc4ca3efb64201ba881b6f2e4095ea",
+      "2a1f877a4275431ab3f9ed1f5d8f6601",
+      "16e492949f94400286758f94b7c52bc7"
+    ],
     "host" => ["55b9ed1d38594d43a8319d2ebb332ac6"]
   }
   @creds_names %{
-    "5a1c6a86df9d4096b1d5a65e0862f19a" => "host",
+    "5a1c6a86df9d4096b1d5a65e0862f19a" => "host, system-scoped",
     "55b9ed1d38594d43a8319d2ebb332ac6" => "host, user-scoped",
     "0c7cc07b117645919c4b0bea08bc20fe" => "tpm2",
     "faf7eb9341e3412ca1a436f95a29362f" => "tpm2 with a PCR public key",
-    "93a894094874449090caf2fc93cab553" => "host+tpm2",
+    "93a894094874449090caf2fc93cab553" => "host+tpm2, system-scoped",
     "ef4ac13679a9480ea7db68897f9f165d" => "host+tpm2, user-scoped",
-    "af4950a849134eb1a73846304ff30c05" => "host+tpm2 with a PCR public key",
+    "af4950a849134eb1a73846304ff30c05" => "host+tpm2 with a PCR public key, system-scoped",
     "adbc4ca3efb64201ba881b6f2e4095ea" => "host+tpm2 with a PCR public key, user-scoped",
+    "d4062dfb71ad4c86804b40ef1180f1fc" => "tpm2, SRK-pinned",
+    "5e2d5c7603724eaf843c6fb5f64098f5" => "tpm2 with a PCR public key, SRK-pinned",
+    "1414258818a240cd900bce862db5c7b9" => "host+tpm2, system-scoped, SRK-pinned",
+    "2a1f877a4275431ab3f9ed1f5d8f6601" => "host+tpm2, user-scoped, SRK-pinned",
+    "afbfeaaceb6a4a3795419d135c47f37b" =>
+      "host+tpm2 with a PCR public key, system-scoped, SRK-pinned",
+    "16e492949f94400286758f94b7c52bc7" =>
+      "host+tpm2 with a PCR public key, user-scoped, SRK-pinned",
     "058469daf6f54324800549da0f8ea2fb" => "null (no encryption)"
   }
   @oaep_md %{"sha256" => :sha256, "sha1" => :sha}
@@ -1060,8 +1073,7 @@ defmodule OfflineCa do
 
   def default_dir(_), do: nil
 
-  def store_ctx(opts) do
-    os = host_os()
+  def store_ctx(opts, os \\ host_os()) do
     default = default_dir(os) && Path.expand(default_dir(os))
     dir = if opts[:store], do: Path.expand(opts[:store]), else: default
 
@@ -1931,7 +1943,7 @@ defmodule OfflineCa do
 
     adopt_utf8 = adopt(utf8, exe, root)
 
-    [host_tpm, _] = SealStore.creds_accept()["host+tpm2"]
+    [host_tpm | _] = SealStore.creds_accept()["host+tpm2"]
     [host] = SealStore.creds_accept()["host"]
 
     {enclave, gate} = fake_enclave()
@@ -2117,8 +2129,18 @@ defmodule OfflineCa do
          {:ok, {rsa_e, rsa_n}}},
       {"control: a blob with another magic is refused",
        match?({:error, _}, SealStore.rsa_from_blob(flip(blob, 0)))},
-      {"control: --no-presence without an explicit --store is refused",
-       match?({:error, "--no-presence" <> _}, store_ctx(%{no_presence: true}))},
+      {"control: on macOS, --no-presence without an explicit --store, or with the default, is refused",
+       Enum.all?(
+         [%{no_presence: true}, %{no_presence: true, store: default_dir(:macos)}],
+         &match?({:error, "--no-presence needs an explicit --store" <> _}, store_ctx(&1, :macos))
+       ) and match?({:ok, _}, store_ctx(%{no_presence: true, store: base}, :macos))},
+      {"a host+tpm2 header pinned to the TPM's SRK (systemd 262) passes for host+tpm2, not for host",
+       SealStore.check_creds_header(creds_header("2a1f877a4275431ab3f9ed1f5d8f6601"), "host+tpm2") ==
+         :ok and
+         match?(
+           {:error, _},
+           SealStore.check_creds_header(creds_header("2a1f877a4275431ab3f9ed1f5d8f6601"), "host")
+         )},
       {"control: a presence prompt cancelled at init's check leaves no store, nor the parents it made",
        init_cancelled == {:error, "the presence prompt was cancelled"} and mac_init_gone},
       {"after that refusal, init seals to the Enclave stand-in and prints three shares",
