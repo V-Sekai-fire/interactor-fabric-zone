@@ -24,30 +24,27 @@ in `src/mbedtls_config/`: X.509 and the crypto core only, with no files, threads
 ## The offline root (`fz_ca_new_seeded`)
 
 The same 32-byte seed always gives the same root key, by RFC 9180's DeriveKeyPair for
-DHKEM(P-256, HKDF-SHA256). The scalar is imported without export permission. The seed lives in the
-operating system's secret store through `contract-keychain`, never in a repository. This root
-issues only `<label>.fdb.fabric.internal` names, for FoundationDB peers, under the same one-hour
-limit, and the tests check RFC 9180's published P-256 vectors: `ikmE` gives `pkEm`, and `ikmR`
-gives `pkRm`.
+DHKEM(P-256, HKDF-SHA256). The scalar is imported without export permission. This root issues only
+`<label>.fdb.fabric.internal` names, for FoundationDB peers, under the same one-hour limit, and the
+tests check RFC 9180's published P-256 vectors: `ikmE` gives `pkEm`, and `ikmR` gives `pkRm`.
 
 Certificates carry subject and authority key identifiers. Every offline root has the same subject,
 so without them a trust store holding two roots, as in a rotation, makes OpenSSL pick one root for
 both and refuse the other's certificates.
 
-On a desk, `tools/offline_ca.exs` keeps the seed under `weftspun.fabric-zone` / `offline-ca-root`
-and drives `fz_offline_ca`, which takes the seed on stdin and builds natively on Windows with MinGW.
-`init` stores a new seed and refuses if one exists. `issue LABEL DIR` refuses if none exists, so a
-deleted seed is never replaced in silence. `fdb-e2e DIR` runs FoundationDB 7.3 on 127.0.0.1:4690
-over TLS, trusting only the stored root. Its controls:
+On a desk, `tools/offline_ca.exs` keeps the seed sealed to a key that desk's own operating system
+holds, never in a repository:
 
-- A client signed by another seed's root is refused.
-- An expired client is refused.
-- A `.zone.fabric.internal` name, an `fdb-*.chibifire.com` name and a lifetime over the hour are not
-  issued.
+- **macOS:** a Secure Enclave key, which asks for the user's presence.
+- **Windows:** a TPM key on the Platform Crypto Provider, or DPAPI where there is no TPM.
+- **Linux:** `systemd-creds`, on systemd 256 or later.
 
-`--control=trust-other-root` makes the server trust the other root too, so that row must fail.
-`--self-test` runs RFC 9180's `ikmE` vector through the binary and checks the store's refusals
-against `Keychain.Mock`.
+Its verbs are `init`, `adopt`, `recipient`, `enroll`, `install`, `recover`, `status`, `public`,
+`issue` and `fdb-e2e`, and its usage text says what each does. `init` and `adopt` print three
+recovery shares, any two of which rebuild the seed. A seed is installed only when it reproduces the
+root it was given, and a seal is never overwritten. `fdb-e2e` runs FoundationDB 7.3 over TLS,
+trusting only that root, with controls that must be refused. CI runs the self-test on all three
+operating systems.
 
 ## The transport (`quic_peer.elf`)
 
