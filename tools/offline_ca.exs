@@ -1646,7 +1646,9 @@ defmodule OfflineCa do
   end
 
   defp scratch(name) do
-    dir = Path.join(System.tmp_dir!(), "offline_ca_#{name}_#{System.unique_integer([:positive])}")
+    dir =
+      Path.expand("offline_ca_#{name}_#{System.unique_integer([:positive])}", System.tmp_dir!())
+
     File.mkdir_p!(dir)
     dir
   end
@@ -2340,40 +2342,55 @@ defmodule OfflineCa do
     name = "fabric-zone offline-ca ci #{SealStore.hex(:crypto.strong_rand_bytes(4))}"
     {created, blob} = SealStore.seal_cmd(ctx, ["create", name])
 
-    try do
-      with 0 <- created,
-           {:ok, bytes} <- Base.decode16(blob, case: :mixed),
-           {:ok, public} <- SealStore.rsa_from_blob(bytes) do
-        value = :crypto.strong_rand_bytes(32)
-        opens = fn md -> SealStore.hex(SealStore.rsa_encrypt(public, value, md)) end
-
-        md =
-          Enum.find(
-            ["sha256", "sha1"],
-            &(SealStore.seal_cmd(ctx, ["unwrap", name, &1], opens.(&1)) ==
-                {0, SealStore.hex(value)})
-          )
-
-        sealed = SealStore.rsa_encrypt(public, value, md || "sha256")
-
-        {refused, _} =
-          SealStore.seal_cmd(
-            ctx,
-            ["unwrap", name, md || "sha256"],
-            SealStore.hex(flip(sealed, 100))
-          )
-
-        [
-          {"a throwaway TPM key opens RSA-OAEP-#{md} ciphertext from OTP", md != nil},
-          {"control: a flipped RSA ciphertext is refused by the TPM", refused == 4}
-        ]
-      else
-        _ ->
-          [{"a throwaway TPM key is created (fz_seal create exited #{inspect(created)})", false}]
+    rows =
+      try do
+        tpm_rows(ctx, name, created, blob)
+      rescue
+        error ->
+          SealStore.seal_cmd(ctx, ["delete-key", name])
+          reraise error, __STACKTRACE__
       end
-    after
-      {deleted, _} = SealStore.seal_cmd(ctx, ["delete-key", name])
-      IO.puts("throwaway TPM key #{name}: delete-key exited #{deleted}")
+
+    {deleted, _} = SealStore.seal_cmd(ctx, ["delete-key", name])
+    {gone, _} = SealStore.seal_cmd(ctx, ["public", name])
+
+    rows ++
+      [
+        {"control: the throwaway TPM key is deleted (delete-key exited #{inspect(deleted)}), and public no longer finds it",
+         (deleted == 0 or created != 0) and gone == 7}
+      ]
+  end
+
+  defp tpm_rows(ctx, name, created, blob) do
+    with 0 <- created,
+         {:ok, bytes} <- Base.decode16(blob, case: :mixed),
+         {:ok, public} <- SealStore.rsa_from_blob(bytes) do
+      value = :crypto.strong_rand_bytes(32)
+      opens = fn md -> SealStore.hex(SealStore.rsa_encrypt(public, value, md)) end
+
+      md =
+        Enum.find(
+          ["sha256", "sha1"],
+          &(SealStore.seal_cmd(ctx, ["unwrap", name, &1], opens.(&1)) ==
+              {0, SealStore.hex(value)})
+        )
+
+      sealed = SealStore.rsa_encrypt(public, value, md || "sha256")
+
+      {refused, _} =
+        SealStore.seal_cmd(
+          ctx,
+          ["unwrap", name, md || "sha256"],
+          SealStore.hex(flip(sealed, 100))
+        )
+
+      [
+        {"a throwaway TPM key opens RSA-OAEP-#{md} ciphertext from OTP", md != nil},
+        {"control: a flipped RSA ciphertext is refused by the TPM", refused == 4}
+      ]
+    else
+      _ ->
+        [{"a throwaway TPM key is created (fz_seal create exited #{inspect(created)})", false}]
     end
   end
 
@@ -2382,7 +2399,6 @@ defmodule OfflineCa do
     seed = throwaway_seed()
     {:ok, root} = public(exe, seed)
     target = "fabric-zone-ci-adopt-#{SealStore.hex(:crypto.strong_rand_bytes(4))}"
-    dpapi = ["--dpapi"]
     store = Path.join(base, "adopt")
     wrong = Path.join(base, "adopt-wrong")
     bare = Path.join(base, "adopt-without-dpapi")
@@ -2394,61 +2410,109 @@ defmodule OfflineCa do
         "/pass:#{Base.encode64(seed)}"
       ])
 
-    try do
-      {_, raw} = SealStore.seal_cmd(ctx, ["legacy-read", target])
-      without = if not tpm, do: run(["adopt", root, "--store", bare, "--legacy-target", target])
-      adopted = run(["adopt", root, "--store", store, "--legacy-target", target] ++ dpapi)
-      adopt_wrong = run(["adopt", @pk_em, "--store", wrong, "--legacy-target", target] ++ dpapi)
-
-      mechanism =
-        with {:ok, key} <- SealStore.load_key(%{ctx | dir: store}),
-             do: key["mechanism"],
-             else: (_ -> "no key")
-
-      rows = [
-        {"cmdkey writes a throwaway generic credential", stored == 0},
-        {"cmdkey stores the password as UTF-16LE with no terminator, as keyring 3.6.3 does",
-         raw ==
-           SealStore.hex(
-             :unicode.characters_to_binary(Base.encode64(seed), :utf8, {:utf16, :little})
-           )},
-        {"adopt seals the seed from a throwaway generic credential (#{mechanism}), and public reproduces its root",
-         match?({:ok, _}, adopted) and run(["public", "--store", store]) == {:ok, [root]}},
-        {"control: adopt with a wrong ROOTHEX refuses and writes nothing",
-         match?({:error, _}, adopt_wrong) and not File.exists?(wrong)}
-      ]
-
-      if tpm do
-        {rows, ["adopt without --dpapi: this runner has a TPM, so nothing falls back to DPAPI"]}
-      else
-        {rows ++
-           [
-             {"control: with no TPM, adopt without --dpapi refuses, names --dpapi, and writes nothing",
-              match?({:error, _}, without) and String.contains?(elem(without, 1), "--dpapi") and
-                not File.exists?(bare)}
-           ], []}
+    {rows, unchecked} =
+      try do
+        adopt_rows(ctx, %{
+          seed: seed,
+          root: root,
+          target: target,
+          stored: stored,
+          tpm: tpm,
+          store: store,
+          wrong: wrong,
+          bare: bare
+        })
+      rescue
+        error ->
+          forget_adopt(ctx, target, store)
+          reraise error, __STACKTRACE__
       end
-    after
-      System.cmd("cmdkey", ["/delete:#{target}"], stderr_to_stdout: true)
 
-      with {:ok, %{"mechanism" => "tpm-pcp", "key-name" => name}} <-
-             SealStore.load_key(%{ctx | dir: store}) do
-        SealStore.seal_cmd(ctx, ["delete-key", name])
-      end
+    {rows ++ forget_adopt(ctx, target, store), unchecked}
+  end
+
+  defp forget_adopt(ctx, target, store) do
+    key = SealStore.load_key(%{ctx | dir: store})
+    {deleted, _} = System.cmd("cmdkey", ["/delete:#{target}"], stderr_to_stdout: true)
+    {gone, _} = SealStore.seal_cmd(ctx, ["legacy-read", target])
+
+    credential =
+      {"control: the throwaway generic credential is deleted (cmdkey exited #{deleted}), and legacy-read no longer finds it",
+       gone == 7}
+
+    case key do
+      {:ok, %{"mechanism" => "tpm-pcp", "key-name" => name}} ->
+        {key_deleted, _} = SealStore.seal_cmd(ctx, ["delete-key", name])
+        {key_gone, _} = SealStore.seal_cmd(ctx, ["public", name])
+
+        [
+          credential,
+          {"control: the adopt store's TPM key is deleted, and public no longer finds it",
+           key_deleted == 0 and key_gone == 7}
+        ]
+
+      _ ->
+        [credential]
     end
   end
 
-  defp os_check_linux(_exe, base) do
+  defp adopt_rows(ctx, leg) do
+    %{seed: seed, root: root, target: target, stored: stored, tpm: tpm} = leg
+    %{store: store, wrong: wrong, bare: bare} = leg
+    dpapi = ["--dpapi"]
+
+    {_, raw} = SealStore.seal_cmd(ctx, ["legacy-read", target])
+    without = if not tpm, do: run(["adopt", root, "--store", bare, "--legacy-target", target])
+    adopted = run(["adopt", root, "--store", store, "--legacy-target", target] ++ dpapi)
+    adopt_wrong = run(["adopt", @pk_em, "--store", wrong, "--legacy-target", target] ++ dpapi)
+
+    mechanism =
+      with {:ok, key} <- SealStore.load_key(%{ctx | dir: store}),
+           do: key["mechanism"],
+           else: (_ -> "no key")
+
+    rows = [
+      {"cmdkey writes a throwaway generic credential", stored == 0},
+      {"cmdkey stores the password as UTF-16LE with no terminator, as keyring 3.6.3 does",
+       raw ==
+         SealStore.hex(
+           :unicode.characters_to_binary(Base.encode64(seed), :utf8, {:utf16, :little})
+         )},
+      {"adopt seals the seed from a throwaway generic credential (#{mechanism}), and public reproduces its root",
+       match?({:ok, _}, adopted) and run(["public", "--store", store]) == {:ok, [root]}},
+      {"control: adopt with a wrong ROOTHEX refuses and writes nothing",
+       match?({:error, _}, adopt_wrong) and not File.exists?(wrong)}
+    ]
+
+    if tpm do
+      {rows, ["adopt without --dpapi: this runner has a TPM, so nothing falls back to DPAPI"]}
+    else
+      {rows ++
+         [
+           {"control: with no TPM, adopt without --dpapi refuses, names --dpapi, and writes nothing",
+            match?({:error, _}, without) and String.contains?(elem(without, 1), "--dpapi") and
+              not File.exists?(bare)}
+         ], []}
+    end
+  end
+
+  defp os_check_linux(exe, base) do
     store = Path.join(base, "store")
 
     case SealStore.systemd_version(%{}) do
       {:ok, version} ->
         init = run(["init", "--store", store])
 
+        root =
+          with {:ok, lines} <- init,
+               [_, hex] <- Enum.find_value(lines, &Regex.run(~r/^root public key (\S+)$/, &1)),
+               do: hex,
+               else: (_ -> nil)
+
         {[
-           {"systemd #{version}: init seals a seed with systemd-creds, and public reproduces its root",
-            match?({:ok, _}, init) and match?({:ok, [_]}, run(["public", "--store", store]))}
-         ], []}
+           {"systemd #{version}: init seals a seed with systemd-creds, and public reproduces the root init printed",
+            root != nil and run(["public", "--store", store]) == {:ok, [root]}}
+         ] ++ creds_controls(exe, base, store, root), []}
 
       {:error, message} ->
         refused = run(["init", "--store", store])
@@ -2459,6 +2523,38 @@ defmodule OfflineCa do
               match?({:error, "systemd-below-256" <> _}, refused) and
               not File.exists?(store)}
          ], ["the systemd-creds round trip: #{message}"]}
+    end
+  end
+
+  defp creds_controls(exe, base, store, root) do
+    {:ok, ctx} = store_ctx(%{store: store})
+    other_name = "fabric-zone.offline-ca-other"
+
+    planted = fn name, sealed ->
+      dir = Path.join(base, name)
+      File.mkdir_p!(dir)
+      Enum.each(["key.txt", "root.txt"], &File.cp!(Path.join(store, &1), Path.join(dir, &1)))
+      File.write!(Path.join(dir, "seed.sealed"), sealed)
+      run(["public", "--store", dir])
+    end
+
+    with {:ok, key, seed, _} <- open_checked(ctx, exe),
+         {:ok, other} <- SealStore.creds_encrypt(ctx, other_name, key["binding"], seed),
+         {:ok, bytes} <-
+           Base.decode64(String.replace(File.read!(SealStore.sealed_path(ctx)), ~r/\s/, "")) do
+      [
+        {"control: a credential encrypted under another --name is refused, though it opens under its own",
+         SealStore.creds_decrypt(ctx, other_name, other) == {:ok, seed} and
+           match?({:error, _}, planted.("other-name", other))},
+        {"control: a credential with one flipped byte is refused, though the same bytes unflipped open",
+         planted.("re-encoded", Base.encode64(bytes)) == {:ok, [root]} and
+           match?(
+             {:error, _},
+             planted.("flipped", Base.encode64(flip(bytes, byte_size(bytes) - 20)))
+           )}
+      ]
+    else
+      other -> [{"the credential controls could run: #{inspect(other)}", false}]
     end
   end
 
