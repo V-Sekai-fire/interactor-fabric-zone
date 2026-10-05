@@ -23,6 +23,10 @@ const CFStringRef kTokenObjectId = CFSTR("toid");
 const char *const kHandleName = "se.handle";
 const size_t kHandleMax = 4096;
 const size_t kPointBytes = 65;
+const CFStringRef kTokenErrorDomain = CFSTR("CryptoTokenKit");
+const long kTokenCanceledByUser = -4;
+const CFStringRef kAuthenticationErrorDomain = CFSTR("com.apple.LocalAuthentication");
+const long kAuthenticationUserCancel = -2;
 
 template <typename T>
 class CfRef {
@@ -50,6 +54,16 @@ CFMutableDictionaryRef new_dictionary() {
 
 long error_code(CFErrorRef p_error) {
 	return p_error == nullptr ? 0 : long(CFErrorGetCode(p_error));
+}
+
+bool cancelled(CFErrorRef p_error) {
+	if (p_error == nullptr) {
+		return false;
+	}
+	CFStringRef domain = CFErrorGetDomain(p_error);
+	long code = error_code(p_error);
+	return code == errSecUserCanceled || (code == kTokenCanceledByUser && CFEqual(domain, kTokenErrorDomain)) ||
+			(code == kAuthenticationUserCancel && CFEqual(domain, kAuthenticationErrorDomain));
 }
 
 void error_text(CFErrorRef p_error, char *r_text, size_t p_size) {
@@ -276,8 +290,8 @@ int verb_z(const char *p_dir) {
 	CfRef<CFDataRef> shared(SecKeyCopyKeyExchangeResult(key.get(), kSecKeyAlgorithmECDHKeyExchangeStandard, peer.get(),
 			parameters.get(), &error));
 	if (!shared) {
-		bool cancelled = error_code(error) == errSecUserCanceled;
-		return fail_error(cancelled ? STATUS_CANCELLED : STATUS_REFUSED, "the Enclave refused the key agreement", error);
+		int status_code = cancelled(error) ? STATUS_CANCELLED : STATUS_REFUSED;
+		return fail_error(status_code, "the Enclave refused the key agreement", error);
 	}
 	Bytes z(CFDataGetBytePtr(shared.get()), CFDataGetBytePtr(shared.get()) + CFDataGetLength(shared.get()));
 	bool written = z.size() == 32 && write_hex_line(z.data(), z.size());
