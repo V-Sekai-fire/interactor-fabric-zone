@@ -614,7 +614,10 @@ defmodule SealStore do
     target = opts[:legacy_target] || "offline-ca-root.weftspun.fabric-zone"
 
     fn ->
-      case seal_cmd(ctx, ["legacy-read", target]) do
+      case Regex.match?(~r/\A[\x20-\x7e]+\z/, target) && seal_cmd(ctx, ["legacy-read", target]) do
+        false ->
+          {:error, "--legacy-target is printable ASCII"}
+
         {0, blob} ->
           with {:ok, bytes} <- Base.decode16(blob, case: :mixed), do: {:ok, {:utf16le, bytes}}
 
@@ -786,7 +789,7 @@ defmodule OfflineCa do
                                $XDG_STATE_HOME (or ~/.local/state)/fabric-zone/offline-ca on Linux
     --no-presence              macOS, with an explicit --store only: the Enclave key asks for no presence
     --dpapi                    Windows: let DPAPI (CurrentUser) hold the seed where no TPM PCP is usable
-    --legacy-target TARGET     Windows adopt: the generic credential (offline-ca-root.weftspun.fabric-zone)
+    --legacy-target TARGET     Windows adopt: the generic credential, in ASCII (offline-ca-root.weftspun.fabric-zone)
     --legacy-keychain FILE     macOS adopt: read this keychain file instead of the search list
 
   ROOTHEX is the root public key, 130 hex characters starting 04.

@@ -21,6 +21,7 @@ namespace {
 
 // mingw's ncrypt.h has no MS_PLATFORM_CRYPTO_PROVIDER.
 const wchar_t *const kPlatformProvider = L"Microsoft Platform Crypto Provider";
+const wchar_t *const kPlatformType = L"PCP_PLATFORM_TYPE";
 const wchar_t *const kDpapiDescription = L"fabric-zone offline-ca-root";
 const char kDpapiEntropy[] = "fabric-zone offline-ca-root v1";
 const DWORD kRsaBits = 2048;
@@ -55,14 +56,14 @@ public:
 	NCRYPT_KEY_HANDLE handle = 0;
 };
 
-std::wstring widen(const char *p_text) {
-	int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, p_text, -1, nullptr, 0);
-	if (count <= 0) {
-		return std::wstring();
+std::wstring ascii_wide(const char *p_text) {
+	std::wstring wide;
+	for (const char *c = p_text; *c != '\0'; ++c) {
+		if (*c < 0x20 || *c > 0x7e) {
+			return std::wstring();
+		}
+		wide.push_back(wchar_t(*c));
 	}
-	std::wstring wide(size_t(count), L'\0');
-	MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, p_text, -1, &wide[0], count);
-	wide.resize(size_t(count - 1));
 	return wide;
 }
 
@@ -75,9 +76,9 @@ int open_key(Provider &r_provider, Key &r_key, const char *p_name) {
 	if (status != ERROR_SUCCESS) {
 		return fail_code(STATUS_UNAVAILABLE, "tpm-pcp unavailable", long(status));
 	}
-	std::wstring name = widen(p_name);
+	std::wstring name = ascii_wide(p_name);
 	if (name.empty()) {
-		return fail(STATUS_USAGE, "the key name must be non-empty UTF-8");
+		return fail(STATUS_USAGE, "the key name must be non-empty printable ASCII");
 	}
 	status = NCryptOpenKey(r_provider.handle, &r_key.handle, name.c_str(), 0, NCRYPT_SILENT_FLAG);
 	if (key_missing(status)) {
@@ -114,16 +115,19 @@ int verb_probe() {
 		printf("tpm-pcp unavailable (0x%08lx)\n", static_cast<unsigned long>(status));
 		return STATUS_UNAVAILABLE;
 	}
-	DWORD implementation = 0;
+	wchar_t platform[256] = {};
 	DWORD got = 0;
-	status = NCryptGetProperty(provider.handle, NCRYPT_IMPL_TYPE_PROPERTY, reinterpret_cast<PBYTE>(&implementation),
-			sizeof implementation, &got, 0);
-	if (status == ERROR_SUCCESS && (implementation & NCRYPT_IMPL_HARDWARE_FLAG) == 0) {
-		printf("tpm-pcp unavailable (implementation 0x%08lx is not hardware)\n",
-				static_cast<unsigned long>(implementation));
+	status = NCryptGetProperty(provider.handle, kPlatformType, reinterpret_cast<PBYTE>(platform),
+			sizeof platform - sizeof(wchar_t), &got, 0);
+	if (status != ERROR_SUCCESS || got < sizeof(wchar_t)) {
+		printf("tpm-pcp unavailable (no TPM platform type, 0x%08lx)\n", static_cast<unsigned long>(status));
 		return STATUS_UNAVAILABLE;
 	}
-	puts("tpm-pcp available");
+	std::string shown;
+	for (size_t i = 0; i < got / sizeof(wchar_t) && platform[i] != L'\0'; ++i) {
+		shown.push_back(platform[i] >= 0x20 && platform[i] <= 0x7e ? char(platform[i]) : '?');
+	}
+	printf("tpm-pcp available (%s)\n", shown.c_str());
 	return STATUS_OK;
 }
 
@@ -133,9 +137,9 @@ int verb_create(const char *p_name) {
 	if (status != ERROR_SUCCESS) {
 		return fail_code(STATUS_UNAVAILABLE, "tpm-pcp unavailable", long(status));
 	}
-	std::wstring name = widen(p_name);
+	std::wstring name = ascii_wide(p_name);
 	if (name.empty()) {
-		return fail(STATUS_USAGE, "the key name must be non-empty UTF-8");
+		return fail(STATUS_USAGE, "the key name must be non-empty printable ASCII");
 	}
 	Key existing;
 	status = NCryptOpenKey(provider.handle, &existing.handle, name.c_str(), 0, NCRYPT_SILENT_FLAG);
@@ -247,9 +251,9 @@ int verb_unprotect() {
 }
 
 int verb_legacy_read(const char *p_target) {
-	std::wstring target = widen(p_target);
+	std::wstring target = ascii_wide(p_target);
 	if (target.empty()) {
-		return fail(STATUS_USAGE, "the target must be non-empty UTF-8");
+		return fail(STATUS_USAGE, "the target must be non-empty printable ASCII");
 	}
 	PCREDENTIALW credential = nullptr;
 	if (!CredReadW(target.c_str(), CRED_TYPE_GENERIC, 0, &credential)) {
