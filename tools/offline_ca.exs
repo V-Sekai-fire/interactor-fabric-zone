@@ -216,12 +216,59 @@ defmodule SealStore do
       software_rsa: ["software-rsa"]
     }
 
-    if mechanism in Map.get(allowed, ctx.os, []),
-      do: {:ok, key},
-      else: {:error, "#{key_path(ctx)} names #{mechanism}, which this desk does not hold"}
+    cond do
+      mechanism not in Map.get(allowed, ctx.os, []) ->
+        {:error, "#{key_path(ctx)} names #{mechanism}, which this desk does not hold"}
+
+      well_formed?(key) ->
+        {:ok, key}
+
+      true ->
+        {:error, "#{key_path(ctx)} is not a well-formed #{mechanism} record"}
+    end
   end
 
   defp matching(ctx, _), do: {:error, "#{key_path(ctx)} names no mechanism"}
+
+  defp well_formed?(%{"mechanism" => "secure-enclave", "public" => point} = key),
+    do: key["handle"] == "se.handle" and key["presence"] in ["yes", "no"] and p256_hex?(point)
+
+  defp well_formed?(%{"mechanism" => "software-p256", "public" => point}), do: p256_hex?(point)
+
+  defp well_formed?(%{"mechanism" => m, "public" => der, "oaep" => md} = key)
+       when m in ["tpm-pcp", "software-rsa"] and md in ["sha256", "sha1"],
+       do: (m == "software-rsa" or key["key-name"] not in [nil, ""]) and rsa_hex?(der)
+
+  defp well_formed?(%{"mechanism" => "dpapi", "scope" => "current-user"}), do: true
+
+  defp well_formed?(%{"mechanism" => "systemd-creds", "binding" => b, "name" => @creds_name}),
+    do: b in ["host", "host+tpm2"]
+
+  defp well_formed?(_), do: false
+
+  defp p256_hex?(text),
+    do:
+      match?(
+        {:ok, _},
+        with({:ok, bytes} <- Base.decode16(text, case: :mixed), do: p256_point(bytes))
+      )
+
+  defp rsa_hex?(text),
+    do:
+      match?(
+        {:ok, _},
+        with({:ok, bytes} <- Base.decode16(text, case: :mixed), do: from_spki(bytes))
+      )
+
+  def p256_point(<<4, _::binary-64>> = point) do
+    {_, scalar} = :crypto.generate_key(:ecdh, :prime256v1)
+    _ = :crypto.compute_key(:ecdh, point, scalar, :prime256v1)
+    {:ok, point}
+  rescue
+    ErlangError -> {:error, "not a point on P-256"}
+  end
+
+  def p256_point(_), do: {:error, "not a 65-byte SEC1 point"}
 
   def ensure_key(ctx) do
     case load_key(ctx) do
@@ -368,16 +415,17 @@ defmodule SealStore do
   # SHA-256 OAEP unless the TPM refuses it; the probe takes the same path as the seed.
   defp choose_oaep(ctx, key) do
     probe = :crypto.strong_rand_bytes(32)
-    {:ok, public} = from_spki(unhex!(key["public"]))
 
-    choice =
-      Enum.find(["sha256", "sha1"], fn md ->
-        rsa_unwrap(ctx, key, rsa_encrypt(public, probe, md), md) == {:ok, probe}
-      end)
+    with {:ok, public} <- from_spki(unhex!(key["public"])) do
+      choice =
+        Enum.find(["sha256", "sha1"], fn md ->
+          rsa_unwrap(ctx, key, rsa_encrypt(public, probe, md), md) == {:ok, probe}
+        end)
 
-    if choice,
-      do: {:ok, choice},
-      else: {:error, "the key opened neither OAEP-SHA256 nor OAEP-SHA1 ciphertext"}
+      if choice,
+        do: {:ok, choice},
+        else: {:error, "the key opened neither OAEP-SHA256 nor OAEP-SHA1 ciphertext"}
+    end
   end
 
   def seal(ctx, key, seed) do
@@ -387,8 +435,14 @@ defmodule SealStore do
     end
   end
 
-  def seal_to({:p256, point}, seed), do: {:ok, Hpke.seal(point, @info, seed)}
-  def seal_to({:rsa, public, md}, seed), do: {:ok, rsa_encrypt(public, seed, md)}
+  def seal_to(to, seed) do
+    case to do
+      {:p256, point} -> {:ok, Hpke.seal(point, @info, seed)}
+      {:rsa, public, md} -> {:ok, rsa_encrypt(public, seed, md)}
+    end
+  rescue
+    _ -> {:error, "the seed could not be sealed to that key"}
+  end
 
   defp seal_in_os(ctx, %{"mechanism" => "dpapi"}, seed) do
     case seal_cmd(ctx, ["protect"], hex(seed)) do
@@ -402,6 +456,8 @@ defmodule SealStore do
          :ok <- check_creds_header(text, binding),
          do: {:ok, text}
   end
+
+  defp seal_in_os(_ctx, %{"mechanism" => m}, _seed), do: {:error, "#{m} has no seal"}
 
   def creds_encrypt(ctx, name, binding, seed) do
     args = ["--user", "--name=#{name}", "--with-key=#{binding}", "encrypt", "-", "-"]
@@ -543,11 +599,13 @@ defmodule SealStore do
 
   def from_spki(der) do
     case :public_key.pem_entry_decode({:SubjectPublicKeyInfo, der, :not_encrypted}) do
-      {:RSAPublicKey, n, e} when n >= 1 <<< 2047 and n < 1 <<< 2048 ->
+      {:RSAPublicKey, n, e}
+      when n >= 1 <<< 2047 and n < 1 <<< 2048 and e >= 3 and e < n and rem(e, 2) == 1 ->
         {:ok, {:binary.encode_unsigned(e), :binary.encode_unsigned(n)}}
 
       _ ->
-        {:error, "not the SubjectPublicKeyInfo of a 2048-bit RSA key"}
+        {:error,
+         "not the SubjectPublicKeyInfo of a 2048-bit RSA key with an odd exponent from 3 to n-1"}
     end
   rescue
     _ -> {:error, "not a SubjectPublicKeyInfo"}
@@ -605,11 +663,10 @@ defmodule SealStore do
   end
 
   defp recipient_key("p256", <<4, _::binary-64>> = point) do
-    {_, scalar} = :crypto.generate_key(:ecdh, :prime256v1)
-    _ = :crypto.compute_key(:ecdh, point, scalar, :prime256v1)
-    {:ok, {:p256, point}}
-  rescue
-    ErlangError -> {:error, "the p256 RECIPIENT is not a point on P-256"}
+    case p256_point(point) do
+      {:ok, point} -> {:ok, {:p256, point}}
+      {:error, _} -> {:error, "the p256 RECIPIENT is not a point on P-256"}
+    end
   end
 
   defp recipient_key("rsa", der),
@@ -1829,6 +1886,36 @@ defmodule OfflineCa do
     exited = Port.open({:spawn_executable, exe}, [:binary, :exit_status, :stderr_to_stdout])
     SealStore.collect(exited, "", 10_000)
 
+    {[_, n2048], _} = :crypto.generate_key(:rsa, {2048, 65537})
+    big_e = :binary.encode_unsigned(:binary.decode_unsigned(n2048) + 2)
+
+    rsa_to = fn e ->
+      SealStore.parse_recipient("rsa:" <> SealStore.hex(SealStore.spki(e, n2048)))
+    end
+
+    off_curve = {:p256, <<4, 0::512>>}
+
+    hpke_raises =
+      try do
+        Hpke.seal(elem(off_curve, 1), info, seed)
+        false
+      rescue
+        _ -> true
+      end
+
+    unsealable = SealStore.seal_to(off_curve, seed)
+
+    malformed = soft(base, "malformed", :software_p256)
+    File.mkdir_p!(malformed.dir)
+
+    File.write!(
+      Path.join(malformed.dir, "key.txt"),
+      "fabric-zone offline-ca key v1\nmechanism software-p256\n"
+    )
+
+    before_malformed = snapshot(malformed.dir)
+    recover_malformed = recover(malformed, exe, root, Enum.take(shares, 2))
+
     raw_raises =
       try do
         Port.command(exited, "")
@@ -1943,6 +2030,15 @@ defmodule OfflineCa do
        share_count(linux_init) == 3 and
          match?({:ok, %{"binding" => "host"}}, SealStore.load_key(lk)) and
          match?({:ok, _, _, _}, open_checked(lk, exe))},
+      {"control: an RSA RECIPIENT whose exponent is 1, 2 or above its modulus is refused; 65537 is taken",
+       Enum.all?([<<1>>, <<2>>, big_e], &match?({:error, _}, rsa_to.(&1))) and
+         match?({:ok, _, _}, rsa_to.(<<1, 0, 1>>))},
+      {"control: a seal the crypto library raises on is refused with a fixed message, not the seed",
+       hpke_raises and unsealable == {:error, "the seed could not be sealed to that key"}},
+      {"control: a key.txt without its public line is refused, and recover writes nothing",
+       match?({:error, _}, SealStore.load_key(malformed)) and
+         match?({:error, _}, recover_malformed) and
+         snapshot(malformed.dir) == before_malformed},
       {"control: input to a helper that has exited is dropped, where Port.command raises with it",
        raw_raises and SealStore.send_input(exited, "") == :closed}
     ]
