@@ -406,8 +406,13 @@ defmodule SealStore do
          do: {:ok, Map.put(key, "oaep", md)}
   end
 
-  defp fall_back(%{allow_dpapi: true}, _),
-    do: {:ok, %{"mechanism" => "dpapi", "scope" => "current-user"}}
+  defp fall_back(%{recipient: true}, {:error, message}),
+    do:
+      {:error,
+       "#{message}; a desk without a TPM key has no RECIPIENT and takes the seed with recover"}
+
+  defp fall_back(%{allow_dpapi: true}, {:error, message}),
+    do: {:ok, %{"mechanism" => "dpapi", "scope" => "current-user", "no-tpm" => message}}
 
   defp fall_back(_, {:error, message}),
     do: {:error, "#{message}; --dpapi lets DPAPI (CurrentUser) hold the seed instead"}
@@ -416,15 +421,17 @@ defmodule SealStore do
   defp choose_oaep(ctx, key) do
     probe = :crypto.strong_rand_bytes(32)
 
-    with {:ok, public} <- from_spki(unhex!(key["public"])) do
-      choice =
-        Enum.find(["sha256", "sha1"], fn md ->
-          rsa_unwrap(ctx, key, rsa_encrypt(public, probe, md), md) == {:ok, probe}
-        end)
+    with {:ok, public} <- from_spki(unhex!(key["public"])),
+         {:refused, _} <- oaep_round_trip(ctx, key, public, probe, "sha256"),
+         {:refused, why} <- oaep_round_trip(ctx, key, public, probe, "sha1"),
+         do: {:error, "#{why}; the key opened neither OAEP-SHA256 nor OAEP-SHA1 ciphertext"}
+  end
 
-      if choice,
-        do: {:ok, choice},
-        else: {:error, "the key opened neither OAEP-SHA256 nor OAEP-SHA1 ciphertext"}
+  defp oaep_round_trip(ctx, key, public, probe, md) do
+    case rsa_unwrap(ctx, key, rsa_encrypt(public, probe, md), md) do
+      {:ok, ^probe} -> {:ok, md}
+      {:ok, _} -> {:error, "the key opened OAEP-#{String.upcase(md)} ciphertext to other bytes"}
+      other -> other
     end
   end
 
@@ -541,8 +548,12 @@ defmodule SealStore do
   end
 
   defp open_any(ctx, %{"mechanism" => m, "oaep" => md} = key, sealed)
-       when m in ["tpm-pcp", "software-rsa"],
-       do: rsa_unwrap(ctx, key, sealed, md)
+       when m in ["tpm-pcp", "software-rsa"] do
+    case rsa_unwrap(ctx, key, sealed, md) do
+      {:refused, why} -> {:error, why}
+      other -> other
+    end
+  end
 
   defp open_any(ctx, %{"mechanism" => "dpapi"}, sealed) do
     case seal_cmd(ctx, ["unprotect"], hex(sealed)) do
@@ -562,28 +573,37 @@ defmodule SealStore do
   defp rsa_unwrap(ctx, %{"mechanism" => "tpm-pcp", "key-name" => name}, sealed, md) do
     case seal_cmd(ctx, ["unwrap", name, md], hex(sealed)) do
       {0, plain} ->
-        Base.decode16(plain, case: :mixed)
+        with :error <- Base.decode16(plain, case: :mixed),
+             do: {:error, "fz_seal unwrap printed no plaintext"}
+
+      {4, _} ->
+        {:refused,
+         "the TPM refused the OAEP-#{String.upcase(md)} ciphertext (fz_seal unwrap exited 4)"}
 
       {status, _} ->
-        {:error, "the TPM refused the seal (fz_seal unwrap exited #{inspect(status)})"}
+        {:error, "fz_seal unwrap exited #{inspect(status)}"}
     end
   end
 
   defp rsa_unwrap(ctx, %{"mechanism" => "software-rsa"}, sealed, md) do
     if ctx[:refuse_sha256] && md == "sha256" do
-      :error
+      {:refused, "the software key refuses OAEP-SHA256"}
     else
-      with {:ok, stored} <- File.read(soft_path(ctx)) do
-        {:ok, :crypto.private_decrypt(:rsa, sealed, :erlang.binary_to_term(stored), oaep(md))}
+      case File.read(soft_path(ctx)) do
+        {:ok, stored} ->
+          {:ok, :crypto.private_decrypt(:rsa, sealed, :erlang.binary_to_term(stored), oaep(md))}
+
+        {:error, reason} ->
+          {:error, "read #{soft_path(ctx)}: #{reason}"}
       end
     end
   rescue
-    ErlangError -> :error
+    _ -> {:refused, "the software key refused the OAEP-#{String.upcase(md)} ciphertext"}
   end
 
   def rsa_encrypt({e, n}, plain, md), do: :crypto.public_encrypt(:rsa, plain, [e, n], oaep(md))
 
-  defp oaep(md) do
+  def oaep(md) do
     hash = Map.fetch!(@oaep_md, md)
     [{:rsa_padding, :rsa_pkcs1_oaep_padding}, {:rsa_oaep_md, hash}, {:rsa_mgf1_md, hash}]
   end
@@ -700,7 +720,8 @@ defmodule SealStore do
         "tpm-pcp: the RSA-2048 key \"#{name}\" on the Microsoft Platform Crypto Provider, RSA-OAEP-#{String.upcase(md)}"
 
       %{"mechanism" => "dpapi"} ->
-        "dpapi: CryptProtectData in the CurrentUser scope; no TPM Platform Crypto Provider was usable when it was made"
+        "dpapi: CryptProtectData in the CurrentUser scope, because no TPM key could be made" <>
+          if(key["no-tpm"], do: " (#{key["no-tpm"]})", else: "")
 
       %{"mechanism" => "systemd-creds", "binding" => binding} ->
         written =
@@ -1115,8 +1136,8 @@ defmodule OfflineCa do
     with :ok <- SealStore.ready(ctx),
          :ok <- SealStore.refuse_if_sealed(ctx),
          {:ok, root} <- public(exe, seed),
-         {:ok, _key} <- install_seed(ctx, exe, seed, root) do
-      {:ok, sealed_lines(ctx, root) ++ share_lines(seed)}
+         {:ok, key} <- install_seed(ctx, exe, seed, root) do
+      {:ok, sealed_lines(ctx, key, root) ++ share_lines(seed)}
     end
   end
 
@@ -1127,9 +1148,9 @@ defmodule OfflineCa do
          {:ok, stored} <- ctx.legacy.(),
          {:ok, seed} <- SealStore.decode_legacy(stored),
          :ok <- check_root(exe, seed, root),
-         {:ok, _key} <- install_seed(ctx, exe, seed, root) do
+         {:ok, key} <- install_seed(ctx, exe, seed, root) do
       {:ok,
-       sealed_lines(ctx, root) ++
+       sealed_lines(ctx, key, root) ++
          ["the legacy entry stays where it was; adopt never deletes it"] ++ share_lines(seed)}
     end
   end
@@ -1139,7 +1160,8 @@ defmodule OfflineCa do
 
   def recipient(ctx, _exe) do
     with :ok <- SealStore.ready(ctx),
-         {:ok, key, _made} <- SealStore.ensure_key(%{ctx | allow_dpapi: false}),
+         {:ok, key, _made} <-
+           SealStore.ensure_key(Map.merge(ctx, %{allow_dpapi: false, recipient: true})),
          {:ok, text} <- SealStore.recipient(key),
          do: {:ok, [text]}
   end
@@ -1169,8 +1191,8 @@ defmodule OfflineCa do
          :ok <- same_recipient(path, to, mine),
          {:ok, seed} <- SealStore.open(ctx, key, sealed),
          :ok <- check_root(exe, seed, root),
-         {:ok, _key} <- install_seed(ctx, exe, seed, root) do
-      {:ok, sealed_lines(ctx, root)}
+         {:ok, key} <- install_seed(ctx, exe, seed, root) do
+      {:ok, sealed_lines(ctx, key, root)}
     end
   end
 
@@ -1181,8 +1203,8 @@ defmodule OfflineCa do
          {:ok, shares} <- read_shares(lines),
          seed = Shamir.combine(shares),
          :ok <- check_root(exe, seed, root),
-         {:ok, _key} <- install_seed(ctx, exe, seed, root) do
-      {:ok, sealed_lines(ctx, root)}
+         {:ok, key} <- install_seed(ctx, exe, seed, root) do
+      {:ok, sealed_lines(ctx, key, root)}
     end
   end
 
@@ -1334,7 +1356,12 @@ defmodule OfflineCa do
     end
   end
 
-  defp sealed_lines(ctx, root), do: ["sealed in #{ctx.dir}", "root public key #{root}"]
+  defp sealed_lines(ctx, key, root),
+    do: [
+      "sealed in #{ctx.dir}",
+      "mechanism #{SealStore.describe(ctx, key)}",
+      "root public key #{root}"
+    ]
 
   defp share_lines(seed) do
     ["recovery shares (any two rebuild the seed; keep them apart):"] ++
@@ -1671,6 +1698,71 @@ defmodule OfflineCa do
   defp share_count({:ok, lines}), do: Enum.count(lines, &String.starts_with?(&1, "FZ1-"))
   defp share_count(_), do: 0
 
+  defp fake_tpm(tpm, sha256 \\ :opens) do
+    {:ok, keys} = Agent.start_link(fn -> MapSet.new() end)
+    {[e, n], private} = :crypto.generate_key(:rsa, {2048, 65537})
+    dpapi = :crypto.strong_rand_bytes(32)
+    held? = fn name -> Agent.get(keys, &MapSet.member?(&1, name)) end
+
+    fake = fn
+      ["create", name], nil ->
+        cond do
+          not tpm ->
+            {3, ""}
+
+          held?.(name) ->
+            {6, ""}
+
+          true ->
+            Agent.update(keys, &MapSet.put(&1, name))
+            {0, SealStore.hex(SealStore.rsa_blob(e, n))}
+        end
+
+      ["delete-key", name], nil ->
+        Agent.get_and_update(
+          keys,
+          &{if(name in &1, do: {0, ""}, else: {7, ""}), MapSet.delete(&1, name)}
+        )
+
+      ["unwrap", name, md], sealed ->
+        cond do
+          not held?.(name) ->
+            {7, ""}
+
+          md == "sha256" and sha256 != :opens ->
+            sha256
+
+          true ->
+            try do
+              {0,
+               SealStore.hex(
+                 :crypto.private_decrypt(:rsa, h(sealed), private, SealStore.oaep(md))
+               )}
+            rescue
+              _ -> {4, ""}
+            end
+        end
+
+      ["protect"], plain ->
+        iv = :crypto.strong_rand_bytes(12)
+        {ct, tag} = :crypto.crypto_one_time_aead(:aes_256_gcm, dpapi, iv, h(plain), "", true)
+        {0, SealStore.hex(iv <> ct <> tag)}
+
+      ["unprotect"], blob ->
+        with <<iv::binary-12, body::binary>> when byte_size(body) > 16 <- h(blob),
+             ct = binary_part(body, 0, byte_size(body) - 16),
+             tag = binary_part(body, byte_size(body) - 16, 16),
+             plain when is_binary(plain) <-
+               :crypto.crypto_one_time_aead(:aes_256_gcm, dpapi, iv, ct, "", tag, false) do
+          {0, SealStore.hex(plain)}
+        else
+          _ -> {4, ""}
+        end
+    end
+
+    {fake, keys}
+  end
+
   defp fake_enclave do
     {:ok, gate} = Agent.start_link(fn -> nil end)
 
@@ -1883,6 +1975,24 @@ defmodule OfflineCa do
     lk = soft(base, "linux", :linux, %{fake_creds: fake_creds(host), tpm_device: no_tpm})
     linux_init = init(lk, exe)
 
+    win = %{key_name: "fabric-zone offline-ca-root self-test"}
+    {no_tpm, _} = fake_tpm(false)
+    wn = soft(base, "win-none/nested/store", :windows, Map.put(win, :fake_seal, no_tpm))
+    win_refused = init(wn, exe)
+    win_recipient = recipient(%{wn | allow_dpapi: true}, exe)
+    win_none_gone = not File.exists?(Path.join(base, "win-none"))
+    wd = %{wn | allow_dpapi: true}
+    win_dpapi = init(wd, exe)
+    win_dpapi_status = with({:ok, lines} <- status(wd), do: lines, else: (_ -> []))
+
+    {refuses_sha256, _} = fake_tpm(true, {4, ""})
+    wt = soft(base, "win-tpm", :windows, Map.put(win, :fake_seal, refuses_sha256))
+    win_sha1 = init(wt, exe)
+
+    {times_out, slow_keys} = fake_tpm(true, {:timeout, ""})
+    ws = soft(base, "win-slow/nested/store", :windows, Map.put(win, :fake_seal, times_out))
+    win_slow = init(ws, exe)
+
     exited = Port.open({:spawn_executable, exe}, [:binary, :exit_status, :stderr_to_stdout])
     SealStore.collect(exited, "", 10_000)
 
@@ -2039,6 +2149,27 @@ defmodule OfflineCa do
        match?({:error, _}, SealStore.load_key(malformed)) and
          match?({:error, _}, recover_malformed) and
          snapshot(malformed.dir) == before_malformed},
+      {"control: Windows without a TPM refuses init without --dpapi, names --dpapi, and leaves no store",
+       match?({:error, _}, win_refused) and String.contains?(elem(win_refused, 1), "--dpapi lets") and
+         win_none_gone},
+      {"control: recipient on a desk without a TPM says it has no RECIPIENT, even with --dpapi",
+       match?({:error, _}, win_recipient) and
+         String.ends_with?(
+           elem(win_recipient, 1),
+           "has no RECIPIENT and takes the seed with recover"
+         )},
+      {"with --dpapi and no TPM, DPAPI holds the seed, and init and status name it with the reason",
+       share_count(win_dpapi) == 3 and match?({:ok, _, _, _}, open_checked(wd, exe)) and
+         Enum.all?([elem(win_dpapi, 1), win_dpapi_status], fn lines ->
+           Enum.any?(lines, &(&1 =~ ~r/^mechanism dpapi: .*\(no TPM Platform Crypto Provider/))
+         end)},
+      {"a TPM that refuses OAEP-SHA256 (fz_seal exit 4) is sealed with OAEP-SHA1, and init names it",
+       share_count(win_sha1) == 3 and match?({:ok, _, _, _}, open_checked(wt, exe)) and
+         Enum.any?(elem(win_sha1, 1), &(&1 =~ ~r/^mechanism tpm-pcp: .*RSA-OAEP-SHA1$/))},
+      {"control: a SHA-256 unwrap that times out is no refusal: init refuses, deletes its TPM key, leaves no store",
+       match?({:error, "fz_seal unwrap exited :timeout" <> _}, win_slow) and
+         Agent.get(slow_keys, &MapSet.size/1) == 0 and
+         not File.exists?(Path.join(base, "win-slow"))},
       {"control: input to a helper that has exited is dropped, where Port.command raises with it",
        raw_raises and SealStore.send_input(exited, "") == :closed}
     ]
@@ -2179,7 +2310,8 @@ defmodule OfflineCa do
     {tpm_rows, unchecked} =
       if probe == 0, do: {tpm_leg(ctx), []}, else: {[], ["the TPM leg: #{line}"]}
 
-    {rows ++ tpm_rows ++ adopt_leg(exe, base, ctx), unchecked}
+    {adopt_rows, adopt_unchecked} = adopt_leg(exe, base, ctx, probe == 0)
+    {rows ++ tpm_rows ++ adopt_rows, unchecked ++ adopt_unchecked}
   end
 
   defp tpm_leg(ctx) do
@@ -2224,13 +2356,14 @@ defmodule OfflineCa do
   end
 
   # --dpapi only takes effect where no TPM is usable; the row names the mechanism that holds the seed.
-  defp adopt_leg(exe, base, ctx) do
+  defp adopt_leg(exe, base, ctx, tpm) do
     seed = throwaway_seed()
     {:ok, root} = public(exe, seed)
     target = "fabric-zone-ci-adopt-#{SealStore.hex(:crypto.strong_rand_bytes(4))}"
     dpapi = ["--dpapi"]
     store = Path.join(base, "adopt")
     wrong = Path.join(base, "adopt-wrong")
+    bare = Path.join(base, "adopt-without-dpapi")
 
     {_, stored} =
       System.cmd("cmdkey", [
@@ -2241,6 +2374,7 @@ defmodule OfflineCa do
 
     try do
       {_, raw} = SealStore.seal_cmd(ctx, ["legacy-read", target])
+      without = if not tpm, do: run(["adopt", root, "--store", bare, "--legacy-target", target])
       adopted = run(["adopt", root, "--store", store, "--legacy-target", target] ++ dpapi)
       adopt_wrong = run(["adopt", @pk_em, "--store", wrong, "--legacy-target", target] ++ dpapi)
 
@@ -2249,7 +2383,7 @@ defmodule OfflineCa do
              do: key["mechanism"],
              else: (_ -> "no key")
 
-      [
+      rows = [
         {"cmdkey writes a throwaway generic credential", stored == 0},
         {"cmdkey stores the password as UTF-16LE with no terminator, as keyring 3.6.3 does",
          raw ==
@@ -2261,6 +2395,17 @@ defmodule OfflineCa do
         {"control: adopt with a wrong ROOTHEX refuses and writes nothing",
          match?({:error, _}, adopt_wrong) and not File.exists?(wrong)}
       ]
+
+      if tpm do
+        {rows, ["adopt without --dpapi: this runner has a TPM, so nothing falls back to DPAPI"]}
+      else
+        {rows ++
+           [
+             {"control: with no TPM, adopt without --dpapi refuses, names --dpapi, and writes nothing",
+              match?({:error, _}, without) and String.contains?(elem(without, 1), "--dpapi") and
+                not File.exists?(bare)}
+           ], []}
+      end
     after
       System.cmd("cmdkey", ["/delete:#{target}"], stderr_to_stdout: true)
 
