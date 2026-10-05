@@ -161,6 +161,7 @@ defmodule SealStore do
     "058469daf6f54324800549da0f8ea2fb" => "null (no encryption)"
   }
   @oaep_md %{"sha256" => :sha256, "sha1" => :sha}
+  @store_files ["key.txt", "se.handle", "soft.key", "seed.sealed", "root.txt"]
 
   def info, do: @info
   def creds_accept, do: @creds_accept
@@ -177,17 +178,16 @@ defmodule SealStore do
       else: :ok
   end
 
-  def ready(%{os: :linux}), do: with({:ok, _} <- systemd_version(), do: :ok)
+  def ready(%{os: :linux} = ctx), do: with({:ok, _} <- systemd_version(ctx), do: :ok)
   def ready(_), do: :ok
 
-  def systemd_version do
-    with exe when is_binary(exe) <- System.find_executable("systemd-creds"),
-         {out, 0} <- System.cmd(exe, ["--version"], stderr_to_stdout: true),
+  def systemd_version(ctx) do
+    with {0, out} <- creds_cmd(ctx, ["--version"], nil),
          [_, digits] <- Regex.run(~r/^systemd (\d+)/, out),
          version when version >= 256 <- String.to_integer(digits) do
       {:ok, version}
     else
-      nil ->
+      {:missing, _} ->
         {:error, "systemd-creds is not on PATH; the Linux store needs systemd 256 or later"}
 
       version when is_integer(version) ->
@@ -225,21 +225,56 @@ defmodule SealStore do
 
   def ensure_key(ctx) do
     case load_key(ctx) do
-      {:error, :no_key} ->
-        existed = File.dir?(ctx.dir)
+      {:error, :no_key} -> make_and_record_key(ctx)
+      {:ok, key} -> {:ok, key, :kept}
+      error -> error
+    end
+  end
 
-        with :ok <- ensure_dir(ctx.dir),
-             {:ok, key} <- make_key(ctx),
-             :ok <- write_new(key_path(ctx), record(@key_header, key)) do
-          {:ok, key}
-        else
-          error ->
-            if not existed, do: File.rmdir(ctx.dir)
-            error
-        end
+  defp make_and_record_key(ctx) do
+    made = %{dirs: missing_dirs(ctx.dir), files: listed(ctx.dir), key: nil}
 
-      other ->
-        other
+    with :ok <- undo_if_refused(ensure_dir(ctx.dir), ctx, made),
+         {:ok, key} <- undo_if_refused(make_key(ctx), ctx, made),
+         made = %{made | key: key},
+         :ok <- undo_if_refused(write_new(key_path(ctx), record(@key_header, key)), ctx, made),
+         do: {:ok, key, made}
+  end
+
+  defp undo_if_refused({:error, _} = error, ctx, made) do
+    undo(ctx, made)
+    error
+  end
+
+  defp undo_if_refused(result, _ctx, _made), do: result
+
+  def undo(_ctx, :kept), do: :ok
+
+  def undo(ctx, %{dirs: dirs, files: files, key: key}) do
+    if key, do: forget_key(ctx, key)
+    Enum.each(@store_files -- files, &File.rm(Path.join(ctx.dir, &1)))
+    Enum.each(Enum.reverse(dirs), &File.rmdir/1)
+  end
+
+  defp forget_key(ctx, %{"mechanism" => "tpm-pcp", "key-name" => name}),
+    do: seal_cmd(ctx, ["delete-key", name])
+
+  defp forget_key(_ctx, _key), do: :ok
+
+  defp missing_dirs(dir) do
+    parent = Path.dirname(dir)
+
+    cond do
+      File.dir?(dir) -> []
+      parent == dir -> [dir]
+      true -> missing_dirs(parent) ++ [dir]
+    end
+  end
+
+  defp listed(dir) do
+    case File.ls(dir) do
+      {:ok, names} -> names
+      _ -> []
     end
   end
 
@@ -302,8 +337,9 @@ defmodule SealStore do
     end
   end
 
-  defp make_key(%{os: :linux}) do
-    binding = if File.exists?("/dev/tpmrm0"), do: "host+tpm2", else: "host"
+  defp make_key(%{os: :linux} = ctx) do
+    tpm = Map.get(ctx, :tpm_device, "/dev/tpmrm0")
+    binding = if File.exists?(tpm), do: "host+tpm2", else: "host"
     {:ok, %{"mechanism" => "systemd-creds", "binding" => binding, "name" => @creds_name}}
   end
 
@@ -361,20 +397,45 @@ defmodule SealStore do
     end
   end
 
-  defp seal_in_os(_ctx, %{"mechanism" => "systemd-creds", "binding" => binding}, seed) do
-    exe = System.find_executable("systemd-creds")
-    # systemd-creds reads the plaintext to EOF, and an Erlang port cannot close stdin alone.
-    command =
-      "head -c 32 | exec '#{exe}' --user --name=#{@creds_name} --with-key=#{binding} encrypt - -"
+  defp seal_in_os(ctx, %{"mechanism" => "systemd-creds", "binding" => binding}, seed) do
+    with {:ok, text} <- creds_encrypt(ctx, @creds_name, binding, seed),
+         :ok <- check_creds_header(text, binding),
+         do: {:ok, text}
+  end
 
-    port =
-      Port.open({:spawn_executable, "/bin/sh"}, [:binary, :exit_status, args: ["-c", command]])
+  def creds_encrypt(ctx, name, binding, seed) do
+    args = ["--user", "--name=#{name}", "--with-key=#{binding}", "encrypt", "-", "-"]
 
-    Port.command(port, seed)
-
-    case collect(port, "", 60_000) do
-      {0, text} -> with :ok <- check_creds_header(text, binding), do: {:ok, text}
+    case creds_cmd(ctx, args, seed) do
+      {0, text} -> {:ok, String.trim(text)}
       {status, _} -> {:error, "systemd-creds encrypt exited #{inspect(status)}"}
+    end
+  end
+
+  def creds_decrypt(ctx, name, sealed) do
+    case creds_cmd(ctx, ["--user", "--name=#{name}", "--newline=no", "decrypt", "-", "-"], sealed) do
+      {0, seed} -> {:ok, seed}
+      {status, _} -> {:error, "systemd-creds decrypt exited #{inspect(status)}"}
+    end
+  end
+
+  defp creds_cmd(%{fake_creds: fake}, args, input), do: fake.(args, input)
+
+  # systemd-creds reads its input to EOF, and an Erlang port cannot close stdin alone, so head ends it.
+  defp creds_cmd(_ctx, args, input) do
+    case System.find_executable("systemd-creds") do
+      nil ->
+        {:missing, ""}
+
+      exe ->
+        line = Enum.map_join([exe | args], " ", &"'#{&1}'")
+        command = if input, do: "head -c #{byte_size(input)} | exec #{line}", else: "exec #{line}"
+
+        port =
+          Port.open({:spawn_executable, "/bin/sh"}, [:binary, :exit_status, args: ["-c", command]])
+
+        if input, do: send_input(port, input)
+        collect_raw(port, "", 60_000)
     end
   end
 
@@ -437,14 +498,8 @@ defmodule SealStore do
     end
   end
 
-  defp open_any(ctx, %{"mechanism" => "systemd-creds"}, _sealed) do
-    args = ["--user", "--name=#{@creds_name}", "--newline=no", "decrypt", sealed_path(ctx), "-"]
-
-    case System.cmd(System.find_executable("systemd-creds") || "systemd-creds", args) do
-      {seed, 0} -> {:ok, seed}
-      {_, status} -> {:error, "systemd-creds decrypt exited #{status}"}
-    end
-  end
+  defp open_any(ctx, %{"mechanism" => "systemd-creds"}, sealed),
+    do: creds_decrypt(ctx, @creds_name, sealed)
 
   defp open_any(_ctx, %{"mechanism" => m}, _), do: {:error, "#{m} has no open"}
 
@@ -667,10 +722,17 @@ defmodule SealStore do
     end
   end
 
-  def seal_and_write(ctx, key, seed, root) do
-    with {:ok, sealed} <- seal(ctx, key, seed),
-         :ok <- write_new(sealed_path(ctx), sealed),
-         do: write_new(root_path(ctx), root <> "\n")
+  def write_seal(ctx, sealed, root) do
+    with :ok <- write_new(sealed_path(ctx), sealed) do
+      case write_new(root_path(ctx), root <> "\n") do
+        :ok ->
+          :ok
+
+        error ->
+          File.rm(sealed_path(ctx))
+          error
+      end
+    end
   end
 
   # Written beside the target, flushed, then hard-linked in, so an existing file is never replaced.
@@ -696,7 +758,10 @@ defmodule SealStore do
   end
 
   def ensure_dir(dir) do
-    with :ok <- File.mkdir_p(dir), do: restrict(dir, 0o700)
+    case with(:ok <- File.mkdir_p(dir), do: restrict(dir, 0o700)) do
+      :ok -> :ok
+      {:error, reason} -> {:error, "make #{dir}: #{inspect(reason)}"}
+    end
   end
 
   defp restrict(path, mode) do
@@ -725,19 +790,48 @@ defmodule SealStore do
     end
   end
 
-  def seal_cmd(ctx, args, input \\ nil, timeout \\ 60_000) do
+  def seal_cmd(ctx, args, input \\ nil, timeout \\ 60_000)
+  def seal_cmd(%{fake_seal: fake}, args, input, _timeout), do: fake.(args, input)
+
+  def seal_cmd(ctx, args, input, timeout) do
     port = Port.open({:spawn_executable, ctx.seal_exe}, [:binary, :exit_status, args: args])
-    if input, do: Port.command(port, input <> "\n")
+    if input, do: send_input(port, input <> "\n")
     collect(port, "", timeout)
   end
 
+  def send_input(port, data) do
+    Port.command(port, data)
+    :ok
+  rescue
+    ArgumentError -> :closed
+  end
+
   def collect(port, out, timeout) do
+    {status, raw} = collect_raw(port, out, timeout)
+    {status, String.trim(raw)}
+  end
+
+  def collect_raw(port, out, timeout) do
     receive do
-      {^port, {:data, data}} -> collect(port, out <> data, timeout)
-      {^port, {:exit_status, status}} -> {status, String.trim(out)}
+      {^port, {:data, data}} -> collect_raw(port, out <> data, timeout)
+      {^port, {:exit_status, status}} -> {status, out}
     after
-      timeout -> {:timeout, out}
+      timeout ->
+        stop_port(port)
+        {:timeout, out}
     end
+  end
+
+  def stop_port(port) do
+    with {:os_pid, pid} <- Port.info(port, :os_pid) do
+      if match?({:win32, _}, :os.type()),
+        do: System.cmd("taskkill", ["/F", "/PID", "#{pid}"], stderr_to_stdout: true),
+        else: System.cmd("kill", ["#{pid}"], stderr_to_stdout: true)
+    end
+
+    Port.close(port)
+  rescue
+    ArgumentError -> :ok
   end
 
   defp unhex!(text), do: Base.decode16!(text, case: :mixed)
@@ -964,7 +1058,7 @@ defmodule OfflineCa do
     with :ok <- SealStore.ready(ctx),
          :ok <- SealStore.refuse_if_sealed(ctx),
          {:ok, root} <- public(exe, seed),
-         :ok <- install_seed(ctx, exe, seed, root) do
+         {:ok, _key} <- install_seed(ctx, exe, seed, root) do
       {:ok, sealed_lines(ctx, root) ++ share_lines(seed)}
     end
   end
@@ -976,7 +1070,7 @@ defmodule OfflineCa do
          {:ok, stored} <- ctx.legacy.(),
          {:ok, seed} <- SealStore.decode_legacy(stored),
          :ok <- check_root(exe, seed, root),
-         :ok <- install_seed(ctx, exe, seed, root) do
+         {:ok, _key} <- install_seed(ctx, exe, seed, root) do
       {:ok,
        sealed_lines(ctx, root) ++
          ["the legacy entry stays where it was; adopt never deletes it"] ++ share_lines(seed)}
@@ -988,7 +1082,7 @@ defmodule OfflineCa do
 
   def recipient(ctx, _exe) do
     with :ok <- SealStore.ready(ctx),
-         {:ok, key} <- SealStore.ensure_key(%{ctx | allow_dpapi: false}),
+         {:ok, key, _made} <- SealStore.ensure_key(%{ctx | allow_dpapi: false}),
          {:ok, text} <- SealStore.recipient(key),
          do: {:ok, [text]}
   end
@@ -1018,7 +1112,7 @@ defmodule OfflineCa do
          :ok <- same_recipient(path, to, mine),
          {:ok, seed} <- SealStore.open(ctx, key, sealed),
          :ok <- check_root(exe, seed, root),
-         :ok <- install_seed(ctx, exe, seed, root) do
+         {:ok, _key} <- install_seed(ctx, exe, seed, root) do
       {:ok, sealed_lines(ctx, root)}
     end
   end
@@ -1030,7 +1124,7 @@ defmodule OfflineCa do
          {:ok, shares} <- read_shares(lines),
          seed = Shamir.combine(shares),
          :ok <- check_root(exe, seed, root),
-         :ok <- install_seed(ctx, exe, seed, root) do
+         {:ok, _key} <- install_seed(ctx, exe, seed, root) do
       {:ok, sealed_lines(ctx, root)}
     end
   end
@@ -1057,13 +1151,31 @@ defmodule OfflineCa do
        "#{path} is sealed to #{short(to)}, not to this desk (#{short(mine)}); nothing was written"}
 
   defp install_seed(ctx, exe, seed, root) do
-    with {:ok, key} <- SealStore.ensure_key(ctx),
-         :ok <- SealStore.seal_and_write(ctx, key, seed, root),
-         {:ok, _key, _seed, ^root} <- open_checked(ctx, exe) do
-      :ok
+    with {:ok, key, made} <- SealStore.ensure_key(ctx) do
+      case seal_checked(ctx, exe, key, seed, root) do
+        :ok ->
+          {:ok, key}
+
+        error ->
+          SealStore.undo(ctx, made)
+          error
+      end
+    end
+  end
+
+  # Opened and checked in memory before anything is written; on macOS this open is the presence prompt.
+  defp seal_checked(ctx, exe, key, seed, root) do
+    with {:ok, sealed} <- SealStore.seal(ctx, key, seed),
+         {:ok, opened} <- SealStore.open(ctx, key, sealed),
+         {:ok, ^root} <- public(exe, opened) do
+      SealStore.write_seal(ctx, sealed, root)
     else
-      {:error, _} = error -> error
-      _ -> {:error, "the seal in #{ctx.dir} did not open to the root #{short(root)}"}
+      {:error, _} = error ->
+        error
+
+      {:ok, other} ->
+        {:error,
+         "the seal opens to the root #{short(other)}, not #{short(root)}; nothing was stored"}
     end
   end
 
@@ -1210,7 +1322,7 @@ defmodule OfflineCa do
     port =
       Port.open({:spawn_executable, exe}, [:binary, :exit_status, :stderr_to_stdout, args: args])
 
-    Port.command(port, Base.encode64(seed) <> "\n")
+    SealStore.send_input(port, Base.encode64(seed) <> "\n")
     SealStore.collect(port, "", 30_000)
   end
 
@@ -1499,6 +1611,76 @@ defmodule OfflineCa do
     binary_part(bytes, 0, at) <> <<bxor(:binary.at(bytes, at), 1)>> <> rest
   end
 
+  defp share_count({:ok, lines}), do: Enum.count(lines, &String.starts_with?(&1, "FZ1-"))
+  defp share_count(_), do: 0
+
+  defp fake_enclave do
+    {:ok, gate} = Agent.start_link(fn -> nil end)
+
+    fake = fn
+      ["create", dir | _], nil ->
+        handle = Path.join(dir, "se.handle")
+
+        if File.exists?(handle) do
+          {6, ""}
+        else
+          {point, scalar} = :crypto.generate_key(:ecdh, :prime256v1)
+          File.write!(handle, scalar)
+          {0, SealStore.hex(point)}
+        end
+
+      ["z", dir], enc ->
+        cancel =
+          Agent.get_and_update(gate, fn
+            0 -> {true, nil}
+            nil -> {false, nil}
+            k -> {false, k - 1}
+          end)
+
+        case {cancel, File.read(Path.join(dir, "se.handle"))} do
+          {true, _} ->
+            {8, ""}
+
+          {false, {:ok, scalar}} ->
+            {0, SealStore.hex(:crypto.compute_key(:ecdh, h(enc), scalar, :prime256v1))}
+
+          _ ->
+            {7, ""}
+        end
+    end
+
+    {fake, gate}
+  end
+
+  defp fake_creds(id) do
+    key = :crypto.strong_rand_bytes(32)
+
+    fn
+      ["--version"], nil ->
+        {0, "systemd 257 (257.13)\n"}
+
+      args, input ->
+        "--name=" <> name = Enum.find(args, &String.starts_with?(&1, "--name="))
+
+        if "encrypt" in args do
+          iv = :crypto.strong_rand_bytes(12)
+          {ct, tag} = :crypto.crypto_one_time_aead(:aes_256_gcm, key, iv, input, name, true)
+          {0, Base.encode64(h(id) <> iv <> ct <> tag) <> "\n"}
+        else
+          with {:ok, <<_::binary-16, iv::binary-12, body::binary>>} when byte_size(body) > 16 <-
+                 Base.decode64(String.replace(input, ~r/\s/, "")),
+               ct = binary_part(body, 0, byte_size(body) - 16),
+               tag = binary_part(body, byte_size(body) - 16, 16),
+               plain when is_binary(plain) <-
+                 :crypto.crypto_one_time_aead(:aes_256_gcm, key, iv, ct, name, tag, false) do
+            {0, plain}
+          else
+            _ -> {1, ""}
+          end
+        end
+    end
+  end
+
   defp creds_header(id_hex) do
     Base.encode64(h(id_hex) <> :crypto.strong_rand_bytes(160))
     |> String.graphemes()
@@ -1602,6 +1784,59 @@ defmodule OfflineCa do
 
     [host_tpm, _] = SealStore.creds_accept()["host+tpm2"]
     [host] = SealStore.creds_accept()["host"]
+
+    {enclave, gate} = fake_enclave()
+    mac_init = soft(base, "mac-init/nested/store", :macos, %{fake_seal: enclave})
+    Agent.update(gate, fn _ -> 0 end)
+    init_cancelled = init(mac_init, exe)
+    mac_init_gone = not File.exists?(Path.join(base, "mac-init"))
+    mac_init_again = init(mac_init, exe)
+
+    mi = soft(base, "mac-install", :macos, %{fake_seal: enclave})
+    envelope_mi = Path.join(base, "mi.envelope")
+    enroll(a, exe, first_line(recipient(mi, exe)), envelope_mi)
+    before_mi = snapshot(mi.dir)
+    Agent.update(gate, fn _ -> 1 end)
+    install_cancelled = install(mi, exe, envelope_mi, root)
+    after_mi = snapshot(mi.dir)
+    install_mi = install(mi, exe, envelope_mi, root)
+
+    no_tpm = Path.join(base, "no-tpm")
+
+    lm =
+      soft(base, "linux-mismatch/nested/store", :linux, %{
+        fake_creds: fake_creds(host),
+        tpm_device: base
+      })
+
+    linux_mismatch = init(lm, exe)
+
+    encrypt_fails = fn
+      ["--version"], _ -> {0, "systemd 257 (257.13)\n"}
+      _, _ -> {1, ""}
+    end
+
+    lf =
+      soft(base, "linux-failed/nested/store", :linux, %{
+        fake_creds: encrypt_fails,
+        tpm_device: no_tpm
+      })
+
+    linux_failed = init(lf, exe)
+    lk = soft(base, "linux", :linux, %{fake_creds: fake_creds(host), tpm_device: no_tpm})
+    linux_init = init(lk, exe)
+
+    exited = Port.open({:spawn_executable, exe}, [:binary, :exit_status, :stderr_to_stdout])
+    SealStore.collect(exited, "", 10_000)
+
+    raw_raises =
+      try do
+        Port.command(exited, "")
+        false
+      rescue
+        ArgumentError -> true
+      end
+
     {[rsa_e, rsa_n], _} = :crypto.generate_key(:rsa, {2048, 65537})
     blob = SealStore.rsa_blob(rsa_e, rsa_n)
 
@@ -1686,7 +1921,30 @@ defmodule OfflineCa do
       {"control: a blob with another magic is refused",
        match?({:error, _}, SealStore.rsa_from_blob(flip(blob, 0)))},
       {"control: --no-presence without an explicit --store is refused",
-       match?({:error, "--no-presence" <> _}, store_ctx(%{no_presence: true}))}
+       match?({:error, "--no-presence" <> _}, store_ctx(%{no_presence: true}))},
+      {"control: a presence prompt cancelled at init's check leaves no store, nor the parents it made",
+       init_cancelled == {:error, "the presence prompt was cancelled"} and mac_init_gone},
+      {"after that refusal, init seals to the Enclave stand-in and prints three shares",
+       share_count(mac_init_again) == 3 and match?({:ok, _, _, _}, open_checked(mac_init, exe))},
+      {"control: a presence prompt cancelled at install's check leaves the store as it found it",
+       install_cancelled == {:error, "the presence prompt was cancelled"} and
+         after_mi == before_mi and
+         match?({:ok, _}, install_mi) and match?({:ok, _, ^seed, ^root}, open_checked(mi, exe))},
+      {"control: systemd-creds writes host where host+tpm2 was asked: init refuses and leaves no store",
+       match?(
+         {:error, "systemd-creds wrote a host, user-scoped credential where host+tpm2" <> _},
+         linux_mismatch
+       ) and
+         not File.exists?(Path.join(base, "linux-mismatch"))},
+      {"control: a failed systemd-creds encrypt leaves no store",
+       linux_failed == {:error, "systemd-creds encrypt exited 1"} and
+         not File.exists?(Path.join(base, "linux-failed"))},
+      {"systemd-creds stand-in: init asks for host without a TPM, and public reproduces its root",
+       share_count(linux_init) == 3 and
+         match?({:ok, %{"binding" => "host"}}, SealStore.load_key(lk)) and
+         match?({:ok, _, _, _}, open_checked(lk, exe))},
+      {"control: input to a helper that has exited is dropped, where Port.command raises with it",
+       raw_raises and SealStore.send_input(exited, "") == :closed}
     ]
   end
 
@@ -1920,7 +2178,7 @@ defmodule OfflineCa do
   defp os_check_linux(_exe, base) do
     store = Path.join(base, "store")
 
-    case SealStore.systemd_version() do
+    case SealStore.systemd_version(%{}) do
       {:ok, version} ->
         init = run(["init", "--store", store])
 
