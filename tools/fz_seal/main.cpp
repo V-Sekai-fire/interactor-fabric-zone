@@ -5,6 +5,11 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
+
 namespace fz_seal {
 
 void wipe(void *p_data, size_t p_size) {
@@ -40,6 +45,7 @@ int hex_value(int p_char) {
 
 bool read_hex_line(Bytes &r_bytes, size_t p_max_bytes) {
 	wipe(r_bytes);
+	r_bytes.reserve(p_max_bytes);
 	int high = -1;
 	bool ok = true;
 	for (int c = getchar(); c != EOF && c != '\n'; c = getchar()) {
@@ -67,16 +73,15 @@ bool read_hex_line(Bytes &r_bytes, size_t p_max_bytes) {
 
 bool write_hex_line(const unsigned char *p_bytes, size_t p_count) {
 	static const char digits[] = "0123456789abcdef";
-	char pair[2];
+	std::vector<char> line(p_count * 2 + 1);
 	for (size_t i = 0; i < p_count; ++i) {
-		pair[0] = digits[p_bytes[i] >> 4];
-		pair[1] = digits[p_bytes[i] & 15];
-		if (fwrite(pair, 1, 2, stdout) != 2) {
-			return false;
-		}
+		line[2 * i] = digits[p_bytes[i] >> 4];
+		line[2 * i + 1] = digits[p_bytes[i] & 15];
 	}
-	wipe(pair, sizeof pair);
-	return fputc('\n', stdout) == '\n' && fflush(stdout) == 0;
+	line[p_count * 2] = '\n';
+	bool written = fwrite(line.data(), 1, line.size(), stdout) == line.size() && fflush(stdout) == 0;
+	wipe(line.data(), line.size());
+	return written;
 }
 
 int fail(int p_status, const char *p_what) {
@@ -92,6 +97,11 @@ int fail_code(int p_status, const char *p_what, long p_code) {
 } // namespace fz_seal
 
 int main(int argc, char **argv) {
+#ifdef _WIN32
+	_setmode(_fileno(stdin), _O_BINARY);
+	_setmode(_fileno(stdout), _O_BINARY);
+#endif
+	setvbuf(stdout, nullptr, _IONBF, 0);
 	if (argc < 2) {
 		fputs(fz_seal::platform_usage(), stderr);
 		return fz_seal::STATUS_USAGE;
