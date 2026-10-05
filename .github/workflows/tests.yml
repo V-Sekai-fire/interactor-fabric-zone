@@ -1,5 +1,6 @@
-# The Lean tests (tests/) against the native build of the same C++ the guests compile.
-# The riscv64 guest build needs the org's sysroot and runs on a desk; see README.md.
+# The Lean tests (tests/) against the native build of the same C++ the guests compile, and the
+# offline root's seed store on each OS. The riscv64 guest build needs the org's sysroot and runs on
+# a desk; see README.md.
 name: tests
 on:
   push:
@@ -32,7 +33,7 @@ jobs:
           lake build && .lake/build/bin/tests
   offline-ca-windows:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: msys2/setup-msys2@v2
@@ -48,5 +49,34 @@ jobs:
         with:
           otp-version: "27"
           elixir-version: "1.18"
-      - name: fz_offline_ca against RFC 9180, and the store's refusals
+      - name: fz_offline_ca and fz_seal build; RFC 9180 and the store's refusals on software keys
         run: elixir tools/offline_ca.exs --self-test
+      - name: DPAPI, the TPM where the runner has one, and adopt from a throwaway generic credential
+        run: elixir tools/offline_ca.exs --os-check
+  offline-ca-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          elixir-version: "1.18"
+      - name: RFC 9180 and the store's refusals on software keys
+        run: elixir tools/offline_ca.exs --self-test
+      - name: The systemd-creds store refuses below systemd 256 and writes nothing
+        run: elixir tools/offline_ca.exs --os-check
+  offline-ca-macos:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Elixir from Homebrew
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: brew install elixir
+      - name: fz_offline_ca and fz_seal build; RFC 9180 and the store's refusals on software keys
+        run: elixir tools/offline_ca.exs --self-test
+      - name: The Secure Enclave probe, and adopt's read from a throwaway keychain
+        run: elixir tools/offline_ca.exs --os-check

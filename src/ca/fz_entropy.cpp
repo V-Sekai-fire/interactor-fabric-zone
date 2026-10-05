@@ -30,6 +30,16 @@ bool os_draw(unsigned char *r_out, size_t p_count) {
 	}
 #ifdef _WIN32
 	return BCryptGenRandom(nullptr, r_out, ULONG(p_count), BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
+#elif defined(__APPLE__)
+	// macOS has no getrandom; getentropy returns at most 256 bytes a call.
+	for (size_t got = 0; got < p_count;) {
+		size_t n = p_count - got < 256 ? p_count - got : 256;
+		if (getentropy(r_out + got, n) != 0) {
+			return false;
+		}
+		got += n;
+	}
+	return true;
 #else
 	size_t got = 0;
 	while (got < p_count) {
