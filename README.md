@@ -4,7 +4,7 @@ The fabric's zone, session CA, transport and asset store as sandbox guest progra
 
 ## What it is for
 
-Each piece is C++ built as a riscv64 guest for the engine's sandbox: a session certificate authority whose root key never leaves guest memory, a QUIC peer with mutual TLS and a WebTransport session, one zone of the fabric with its hand-over and crash journal, and a chunked, content-addressed asset store. The host relays packets and the time; keys and plaintext stay in the guest. A Lean package in `tests/` links the same C++ built for the host and checks its properties, each against a control that plants the defect. `tools/offline_ca.exs` keeps an offline root's seed in the operating system's secret store and issues certificates from it. RFD 2287 and RFD 2256 own the design.
+Each piece is C++ built as a riscv64 guest for the engine's sandbox: a session certificate authority whose root key never leaves guest memory, a QUIC peer with mutual TLS and a WebTransport session, one zone of the fabric with its hand-over and crash journal, and a chunked, content-addressed asset store. The host relays packets and the time; keys and plaintext stay in the guest. A Lean package in `tests/` links the same C++ built for the host and checks its properties, each against a control that plants the defect. `tools/offline_ca.exs` keeps an offline root's seed sealed to a key the desk's own operating system holds, and issues certificates from it. RFD 2287 and RFD 2256 own the design.
 
 ## Build and test
 
