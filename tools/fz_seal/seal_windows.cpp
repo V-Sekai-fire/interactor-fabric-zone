@@ -154,7 +154,6 @@ int verb_create(const char *p_name) {
 		return fail_code(STATUS_UNAVAILABLE, "create the TPM key", long(status));
 	}
 	if ((status = set_dword(key.handle, NCRYPT_LENGTH_PROPERTY, kRsaBits)) != ERROR_SUCCESS ||
-			(status = set_dword(key.handle, NCRYPT_EXPORT_POLICY_PROPERTY, 0)) != ERROR_SUCCESS ||
 			(status = set_dword(key.handle, NCRYPT_KEY_USAGE_PROPERTY, NCRYPT_ALLOW_DECRYPT_FLAG)) != ERROR_SUCCESS ||
 			(status = NCryptFinalizeKey(key.handle, NCRYPT_SILENT_FLAG)) != ERROR_SUCCESS) {
 		return fail_code(STATUS_UNAVAILABLE, "finalize the TPM key", long(status));
