@@ -47,10 +47,11 @@ static Variant zone_journal_open(PackedArray<uint8_t> image) {
 	}
 	g_zone->journal().set_flush(&journal_flush, nullptr);
 	std::vector<uint8_t> bytes = image.fetch();
-	if (!g_zone->journal().open(bytes)) {
+	if (!g_zone->open_journal(bytes)) {
 		return text("FAIL: journal did not open");
 	}
-	return text("OK journal, " + std::to_string(bytes.size()) + " bytes replayed from the host");
+	return text("OK journal, " + std::to_string(bytes.size()) + " bytes replayed from the host, " +
+			std::to_string(g_zone->get_entity_count()) + " entities restored");
 }
 
 // The journal image written since the last take, or an empty array when nothing changed.
@@ -93,6 +94,23 @@ static Variant zone_spawn(int global_id, double x, double y, double z, PackedArr
 	std::vector<uint8_t> p = payload.fetch();
 	std::memcpy(e.payload, p.data(), std::min(p.size(), sizeof(e.payload)));
 	return Variant(int64_t(g_zone->spawn(e)));
+}
+
+static Variant zone_set_payload(int global_id, PackedArray<uint8_t> payload) {
+	if (!g_zone) {
+		return Variant(false);
+	}
+	uint32_t p[14] = {};
+	std::vector<uint8_t> b = payload.fetch();
+	std::memcpy(p, b.data(), std::min(b.size(), sizeof(p)));
+	return Variant(g_zone->set_payload(global_id, p));
+}
+
+static Variant zone_despawn(int global_id) {
+	if (!g_zone) {
+		return Variant(false);
+	}
+	return Variant(g_zone->despawn(global_id));
 }
 
 static Variant zone_handover(int global_id, int target_zone) {
@@ -142,6 +160,8 @@ int main() {
 	ADD_API_FUNCTION(zone_packet_in, "bool", "int peer, int channel, PackedByteArray bytes", "A packet the host received for this zone");
 	ADD_API_FUNCTION(zone_tick, "PackedByteArray", "", "One tick; returns frames [peer i32][channel u32][len u32][bytes], peer -1 = broadcast");
 	ADD_API_FUNCTION(zone_spawn, "int", "int global_id, float x, float y, float z, PackedByteArray payload", "A new entity this zone owns; returns its slot");
+	ADD_API_FUNCTION(zone_set_payload, "bool", "int global_id, PackedByteArray payload", "Replace an owned entity's 56-byte payload (a wardrobe entry: its .caibx index id)");
+	ADD_API_FUNCTION(zone_despawn, "bool", "int global_id", "Remove an owned entity");
 	ADD_API_FUNCTION(zone_handover, "bool", "int global_id, int target_zone", "Hand an owned entity to another zone (OWNED -> STAGING)");
 	ADD_API_FUNCTION(zone_state, "int", "int global_id", "0 absent, 1 owned, 2 staging, 3 incoming");
 	ADD_API_FUNCTION(zone_ghosts, "PackedByteArray", "", "Rows other zones published that this zone sees");
