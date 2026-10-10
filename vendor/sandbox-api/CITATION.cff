@@ -24,6 +24,9 @@ abstract: >-
   16 MiB pieces over the bare syscalls: the host views at most 16 MiB of
   guest memory per memory syscall, and ggml's test-backend-ops copies 64 MiB
   tensors (Gate 3, a protection fault above 16 MiB).
+  And docker/api/api.cpp carries godot-sandbox fe0143d's .sandbox_variant
+  section, the size of this build's Variant, which a host built for the
+  other real_t refuses at load instead of misreading every value.
 type: software
 authors:
   - name: libriscv contributors

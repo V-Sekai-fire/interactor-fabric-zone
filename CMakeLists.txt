@@ -12,6 +12,8 @@ add_compile_options("-ffile-prefix-map=${CMAKE_SOURCE_DIR}/=")
 
 if(NOT FZ_NATIVE)
 	set(DOWNLOAD_RUNTIME_API OFF CACHE BOOL "" FORCE)
+	# The pinned editor is a double build, and its Sandbox refuses a guest whose Variant size differs.
+	set(DOUBLE_PRECISION ON CACHE BOOL "Build the guests for a double-precision engine")
 	add_subdirectory(vendor/sandbox-api/cmake sandbox_api)
 endif()
 
