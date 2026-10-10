@@ -42,6 +42,7 @@ Bytes pack_intent(int p_eid, int p_to, uint32_t p_arrival, const FabricEntity &p
 	for (int i = 0; i < 9; i++) {
 		std::memcpy(b.data() + 16 + i * 8, &vals[i], 8);
 	}
+	std::memcpy(b.data() + 88, p_entity.payload, sizeof(p_entity.payload));
 	return b;
 }
 
@@ -71,6 +72,7 @@ bool unpack_intent(const uint8_t *p_data, int p_size, int &r_eid, int &r_to, uin
 	r_entity.ay = vals[7];
 	r_entity.az = vals[8];
 	r_entity.global_id = int(eid64);
+	std::memcpy(r_entity.payload, p_data + 88, sizeof(r_entity.payload));
 	return true;
 }
 

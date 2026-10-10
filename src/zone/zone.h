@@ -25,6 +25,8 @@ struct ZoneConfig {
 	int player_peer_base = 1000;
 	// The control for the single-owner test: hand over without entering STAGING.
 	bool plant_double_handover = false;
+	// Control only: a hand-over sends the intent without its payload, as before it carried one.
+	bool plant_intent_without_payload = false;
 };
 
 // A row another zone published: seen here, owned there.

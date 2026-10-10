@@ -87,6 +87,9 @@ bool Zone::handover(int p_global_id, int p_target_zone) {
 		migrations++;
 		zone::Bytes pkt = zone::pack_intent(p_global_id, p_target_zone,
 				tick_count + srtt[neighbor_index(p_target_zone)], s.entity);
+		if (config.plant_intent_without_payload) {
+			std::fill(pkt.begin() + 88, pkt.end(), uint8_t(0));
+		}
 		transport->send(p_target_zone, CH_MIGRATION, pkt.data(), int(pkt.size()));
 		return true;
 	}

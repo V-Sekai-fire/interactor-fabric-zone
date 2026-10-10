@@ -17,7 +17,7 @@
 namespace fabric::zone {
 
 constexpr int MAX_ZONES = 32;
-constexpr int INTENT_SIZE = 88; // eid u64, to u32, arrival u32, 9 x f64
+constexpr int INTENT_SIZE = 144; // eid u64, to u32, arrival u32, 9 x f64, payload 14 x u32
 constexpr int ROW_SIZE = 100; // one CH_INTEREST row
 constexpr real_t SIM_BOUND = 15.0;
 constexpr real_t V_MAX = PBVH_V_MAX_PHYSICAL_DEFAULT * 0.000001;

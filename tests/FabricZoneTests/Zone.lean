@@ -20,6 +20,7 @@ namespace FabricZoneTests.Zone
 @[extern "fz_lean_pose_trial"] opaque poseTrial : UInt32 → UInt8 → Float
 @[extern "fz_lean_bone_index"] opaque boneIndex : @& String → UInt32
 @[extern "fz_lean_journal_trial"] opaque journalTrial : UInt32 → UInt8 → UInt8
+@[extern "fz_lean_handover_payload_trial"] opaque handoverPayloadTrial : UInt32 → UInt8 → UInt8
 @[extern "fz_lean_zone_reopen_trial"] opaque zoneReopenTrial : UInt32 → UInt8 → UInt8
 @[extern "fz_lean_pose_relay_trial"] opaque poseRelayTrial : UInt32 → UInt8 → UInt8
 
@@ -81,6 +82,9 @@ def poseBreaks (broken : Bool) (c : Nat) : Bool :=
 def journalBreaks (broken : Bool) (c : Nat) : Bool :=
   journalTrial c.toUInt32 (if broken then 1 else 0) != 1
 
+def payloadBreaks (broken : Bool) (c : Nat) : Bool :=
+  handoverPayloadTrial c.toUInt32 (if broken then 1 else 0) != 1
+
 def reopenBreaks (broken : Bool) (c : Nat) : Bool :=
   zoneReopenTrial c.toUInt32 (if broken then 1 else 0) != 1
 
@@ -109,6 +113,8 @@ def properties : List (String × (Bool → Nat → Bool)) := [
     journalBreaks),
   ("a zone reopened from its journal holds the same entities and payloads (control: open without replay)",
     reopenBreaks),
+  ("a hand-over carries the garment's payload, and the receiving zone's journal keeps it (control: the intent drops the payload)",
+    payloadBreaks),
   ("each player sees the other's pose through the zone (control: a player claims the other's id)", relayBreaks) ]
 
 
