@@ -117,6 +117,20 @@ static Variant zone_handover(int global_id, int target_zone) {
 	return Variant(g_zone && g_zone->handover(global_id, target_zone));
 }
 
+// One entity this zone holds: [cx cy cz f64][payload 56 bytes], or empty when it holds none.
+// Position comes back at the journal's float32 precision after a reopen.
+static Variant zone_entity(int global_id) {
+	std::vector<uint8_t> out;
+	const fabric::FabricEntity *e = g_zone ? g_zone->entity(global_id) : nullptr;
+	if (e != nullptr) {
+		out.resize(24 + sizeof(e->payload));
+		double p[3] = { e->cx, e->cy, e->cz };
+		std::memcpy(out.data(), p, 24);
+		std::memcpy(out.data() + 24, e->payload, sizeof(e->payload));
+	}
+	return Variant(PackedArray<uint8_t>(out));
+}
+
 static Variant zone_state(int global_id) {
 	return Variant(int64_t(g_zone ? g_zone->state_of(global_id) : fabric::Zone::ABSENT));
 }
@@ -163,6 +177,7 @@ int main() {
 	ADD_API_FUNCTION(zone_set_payload, "bool", "int global_id, PackedByteArray payload", "Replace an owned entity's 56-byte payload (a wardrobe entry: its .caibx index id)");
 	ADD_API_FUNCTION(zone_despawn, "bool", "int global_id", "Remove an owned entity");
 	ADD_API_FUNCTION(zone_handover, "bool", "int global_id, int target_zone", "Hand an owned entity to another zone (OWNED -> STAGING)");
+	ADD_API_FUNCTION(zone_entity, "PackedByteArray", "int global_id", "One held entity: [cx cy cz f64][payload 56 bytes], empty when absent");
 	ADD_API_FUNCTION(zone_state, "int", "int global_id", "0 absent, 1 owned, 2 staging, 3 incoming");
 	ADD_API_FUNCTION(zone_ghosts, "PackedByteArray", "", "Rows other zones published that this zone sees");
 	ADD_API_FUNCTION(zone_status, "String", "", "Counters");

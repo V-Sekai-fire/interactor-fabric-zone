@@ -7,7 +7,7 @@ var fails := 0
 var checked := 0
 # Every check this gate makes. A script error skips the rest of its function without a FAIL line,
 # so a run that made fewer checks fails.
-const CHECKS := 9
+const CHECKS := 12
 var flushes := 0
 
 func check(what: String, ok: bool) -> void:
@@ -54,6 +54,12 @@ func check_reopen() -> void:
 	w.vmcall("zone_spawn", 4000003, 3.0, 0.0, 0.0, PackedByteArray())
 	var next := idx.duplicate()
 	next[0] = 99
+	var before_update := PackedByteArray()
+	for t in 120:
+		w.vmcall("zone_tick")
+		var early: PackedByteArray = w.vmcall("zone_journal_take")
+		if early.size() > 0:
+			before_update = early
 	var set_ok = w.vmcall("zone_set_payload", 4000002, next)
 	var gone_ok = w.vmcall("zone_despawn", 4000003)
 	var image := PackedByteArray()
@@ -66,6 +72,17 @@ func check_reopen() -> void:
 	var r = reopened(image)
 	check("a zone reopened from its journal owns both garments and not the despawned one",
 			r.vmcall("zone_state", 4000001) == 1 and r.vmcall("zone_state", 4000002) == 1 and r.vmcall("zone_state", 4000003) == 0)
+	var e1: PackedByteArray = r.vmcall("zone_entity", 4000001)
+	var e2: PackedByteArray = r.vmcall("zone_entity", 4000002)
+	var e3: PackedByteArray = r.vmcall("zone_entity", 4000003)
+	check("the reopened zone reads back each garment's index id and position, and nothing for the despawned one",
+			e1.size() == 80 and e1.slice(24) == idx and e1.decode_double(0) == 1.0
+			and e2.size() == 80 and e2.slice(24) == next and e2.decode_double(0) == 2.0 and e3.is_empty())
+	check("a journal flushed before the payload update was taken (%d bytes)" % before_update.size(), before_update.size() > 0)
+	var stale = reopened(before_update)
+	var s2: PackedByteArray = stale.vmcall("zone_entity", 4000002)
+	check("control: a zone reopened from the journal flushed before the update reads the old payload",
+			s2.size() == 80 and s2.slice(24) != next)
 	var c = reopened(PackedByteArray())
 	check("control: a zone opened with no journal holds no garment",
 			c.vmcall("zone_state", 4000001) == 0 and c.vmcall("zone_state", 4000002) == 0)
