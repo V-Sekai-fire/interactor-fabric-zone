@@ -4,9 +4,14 @@
 extends SceneTree
 
 var fails := 0
+var checked := 0
+# Every check this gate makes. A script error skips the rest of its function without a FAIL line,
+# so a run that made fewer checks fails.
+const CHECKS := 9
 var flushes := 0
 
 func check(what: String, ok: bool) -> void:
+	checked += 1
 	print("%s %s" % ["PASS" if ok else "FAIL", what])
 	if not ok:
 		fails += 1
@@ -27,6 +32,43 @@ func frames(buf: PackedByteArray) -> Array:
 		out.append([peer, ch, buf.slice(off + 12, off + 12 + n)])
 		off += 12 + n
 	return out
+
+# A wardrobe of two garments in one zone, a payload change, a despawn, then the zone reopens from
+# its flushed journal. Control: a zone opened with an empty image must not show the garments.
+func reopened(image: PackedByteArray):
+	var r = sandbox("res://zone.elf")
+	r.vmcall("zone_open", 0, 1, 64, 60)
+	print(r.vmcall("zone_journal_open", image))
+	return r
+
+func check_reopen() -> void:
+	var w = sandbox("res://zone.elf")
+	w.vmcall("zone_open", 0, 1, 64, 60)
+	w.vmcall("zone_journal_open", PackedByteArray())
+	var idx := PackedByteArray()
+	idx.resize(56)
+	for i in 32:
+		idx[i] = (i * 7 + 1) % 256
+	w.vmcall("zone_spawn", 4000001, 1.0, 0.0, 0.0, idx)
+	w.vmcall("zone_spawn", 4000002, 2.0, 0.0, 0.0, PackedByteArray())
+	w.vmcall("zone_spawn", 4000003, 3.0, 0.0, 0.0, PackedByteArray())
+	var next := idx.duplicate()
+	next[0] = 99
+	var set_ok = w.vmcall("zone_set_payload", 4000002, next)
+	var gone_ok = w.vmcall("zone_despawn", 4000003)
+	var image := PackedByteArray()
+	for t in 120:
+		w.vmcall("zone_tick")
+		var taken: PackedByteArray = w.vmcall("zone_journal_take")
+		if taken.size() > 0:
+			image = taken
+	check("zone_set_payload and zone_despawn answer through the guest", set_ok == true and gone_ok == true)
+	var r = reopened(image)
+	check("a zone reopened from its journal owns both garments and not the despawned one",
+			r.vmcall("zone_state", 4000001) == 1 and r.vmcall("zone_state", 4000002) == 1 and r.vmcall("zone_state", 4000003) == 0)
+	var c = reopened(PackedByteArray())
+	check("control: a zone opened with no journal holds no garment",
+			c.vmcall("zone_state", 4000001) == 0 and c.vmcall("zone_state", 4000002) == 0)
 
 func _initialize() -> void:
 	var z := [sandbox("res://zone.elf"), sandbox("res://zone.elf")]
@@ -73,6 +115,7 @@ func _initialize() -> void:
 	var z2 = sandbox("res://zone.elf")
 	z2.vmcall("zone_open", 1, 2, 64, 60)
 	print(z2.vmcall("zone_journal_open", image))
+	check_reopen()
 
 	var a := [sandbox("res://asset.elf"), sandbox("res://asset.elf")]
 	var data := PackedByteArray()
@@ -95,5 +138,8 @@ func _initialize() -> void:
 			a[1].vmcall("asset_packet_in", 0, f[1], f[2])
 	var got: PackedByteArray = a[1].vmcall("asset_fetch_result")
 	check("an asset fetched chunk by chunk equals what was stored (%d bytes, state %d)" % [got.size(), state], state == 1 and got == data)
+	if checked != CHECKS:
+		print("FAIL %d of %d checks ran: a script error skipped the rest" % [checked, CHECKS])
+		fails += 1
 	print("RESULT: %s" % ["PASS" if fails == 0 else "FAIL (%d)" % fails])
 	quit(0 if fails == 0 else 1)
