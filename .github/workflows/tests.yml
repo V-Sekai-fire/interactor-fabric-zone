@@ -28,13 +28,14 @@ jobs:
         working-directory: tests
         # The zone's C++ uses libstdc++, and SQLite needs a newer glibc than Lean's bundled clang
         # links against, so the tests link with the system compiler and the system's crt and libraries.
-        # libleancpp is built against the libc++ that ships in the toolchain's lib/. Only those
-        # archives go first; that lib/ also holds an old glibc's crt, which must not be picked up.
+        # Lean's runtime is built against libc++ 22, and some of the symbols it needs exist only in
+        # the toolchain's shared libc++. Only those libraries go first; the toolchain's lib/ also
+        # holds an old glibc's crt, which must not be picked up.
         run: |
-          mkdir -p "$RUNNER_TEMP/leanlibcxx"
-          ln -sf "$(lean --print-prefix)"/lib/libc++*.a "$RUNNER_TEMP/leanlibcxx/"
-          ls "$RUNNER_TEMP/leanlibcxx"
-          export LEAN_CC=cc LIBRARY_PATH="$RUNNER_TEMP/leanlibcxx:/usr/lib/llvm-18/lib"
+          L="$RUNNER_TEMP/leanlibcxx"; mkdir -p "$L"
+          for f in libc++ libc++abi libunwind; do cp -P "$(lean --print-prefix)/lib/$f".so* "$L/"; done
+          ls "$L"
+          export LEAN_CC=cc LIBRARY_PATH="$L:/usr/lib/llvm-18/lib" LD_LIBRARY_PATH="$L"
           lake build && .lake/build/bin/tests
   offline-ca-windows:
     runs-on: windows-latest
