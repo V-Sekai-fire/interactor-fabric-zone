@@ -7,7 +7,7 @@ var fails := 0
 var checked := 0
 # Every check this gate makes. A script error skips the rest of its function without a FAIL line,
 # so a run that made fewer checks fails.
-const CHECKS := 12
+const CHECKS := 13
 var flushes := 0
 
 func check(what: String, ok: bool) -> void:
@@ -95,7 +95,11 @@ func _initialize() -> void:
 	print(z[1].vmcall("zone_journal_open", PackedByteArray()))
 	var image := PackedByteArray()
 	var gid := 3000001
-	z[1].vmcall("zone_spawn", gid, 5.0, 0.0, 0.0, PackedByteArray())
+	var worn := PackedByteArray()
+	worn.resize(56)
+	for i in 56:
+		worn[i] = (i * 13 + 5) % 256
+	z[1].vmcall("zone_spawn", gid, 5.0, 0.0, 0.0, worn)
 	var worst := 0
 	var lost := 0
 	var ghost_seen := false
@@ -128,6 +132,8 @@ func _initialize() -> void:
 	check("never more than one owner in a tick (worst %d)" % worst, worst == 1)
 	check("never a tick with no holder (%d)" % lost, lost == 0)
 	check("the players' zone owns the garment after the hand-over", z[0].vmcall("zone_state", gid) == 1 and z[1].vmcall("zone_state", gid) == 0)
+	var arrived: PackedByteArray = z[0].vmcall("zone_entity", gid)
+	check("the garment's 56 payload bytes arrive with the hand-over", arrived.size() == 80 and arrived.slice(24) == worn)
 	check("the worker's journal flushed to the host (%d flushes, %d bytes)" % [flushes, image.size()], flushes >= 2 and image.size() > 0)
 	var z2 = sandbox("res://zone.elf")
 	z2.vmcall("zone_open", 1, 2, 64, 60)

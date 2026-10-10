@@ -108,6 +108,59 @@ LEAN_EXPORT uint32_t fz_lean_handover_trial(uint32_t p_seed, uint8_t p_plant) {
 	return uint32_t(worst & 3) | (lost ? 4u : 0u) | (done ? 8u : 0u);
 }
 
+// A garment with a seed-chosen payload is handed from the worker zone to the players' zone. 1 when
+// the players' zone owns it with the same 56 payload bytes, and a zone reopened from the players'
+// journal holds them too. With `plant`, the worker sends the intent without the payload.
+LEAN_EXPORT uint8_t fz_lean_handover_payload_trial(uint32_t p_seed, uint8_t p_plant) {
+	LoopbackNet net;
+	net.set_delay(1 + int(mix(p_seed, 300) % 4));
+	uint32_t seed = p_seed;
+	net.set_drop(&no_drop_migration, &seed);
+	LoopbackNet::Endpoint &e0 = net.add(0);
+	LoopbackNet::Endpoint &e1 = net.add(1);
+	LoopbackNet::Endpoint &e2 = net.add(2);
+	ZoneConfig c0;
+	c0.zone_id = 0;
+	c0.zone_count = 2;
+	c0.capacity = 32;
+	ZoneConfig c1 = c0;
+	c1.zone_id = 1;
+	c1.plant_intent_without_payload = p_plant != 0;
+	Zone players(c0, &e0);
+	Zone worker(c1, &e1);
+	if (!players.open_journal({})) {
+		return 0;
+	}
+	FabricEntity g;
+	g.global_id = 3100000 + int(mix(p_seed, 301) % 1000);
+	g.cx = 1.0 + double(mix(p_seed, 302) % 1300) / 100.0;
+	for (int k = 0; k < 14; k++) {
+		g.payload[k] = mix(p_seed, 310 + uint32_t(k)) | 1u;
+	}
+	worker.spawn(g);
+	for (int t = 0; t < 90; t++) {
+		if (t == 5) {
+			worker.handover(g.global_id, 0);
+		}
+		players.tick();
+		worker.tick();
+		net.deliver();
+	}
+	const FabricEntity *got = players.entity(g.global_id);
+	if (players.state_of(g.global_id) != Zone::OWNED || got == nullptr ||
+			std::memcmp(got->payload, g.payload, sizeof(g.payload)) != 0) {
+		return 0;
+	}
+	ZoneConfig cr = c0;
+	cr.zone_count = 1;
+	Zone reopened(cr, &e2);
+	if (!reopened.open_journal(players.journal().image())) {
+		return 0;
+	}
+	const FabricEntity *back = reopened.entity(g.global_id);
+	return (back != nullptr && std::memcmp(back->payload, g.payload, sizeof(g.payload)) == 0) ? 1 : 0;
+}
+
 // Stores seed-chosen data, fetches it over the loopback from another peer. With `plant`, one
 // stored chunk is corrupted first. Returns 1 when the fetched bytes equal the data, 2 when the
 // fetch failed on a chunk that does not match its id, 0 otherwise.
