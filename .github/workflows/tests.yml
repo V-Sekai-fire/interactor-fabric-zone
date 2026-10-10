@@ -28,8 +28,9 @@ jobs:
         working-directory: tests
         # The zone's C++ uses libstdc++, and SQLite needs a newer glibc than Lean's bundled clang
         # links against, so the tests link with the system compiler and the system's crt and libraries.
+        # libleancpp is built against the libc++ that ships in the toolchain's lib/, so that comes first.
         run: |
-          export LEAN_CC=cc LIBRARY_PATH=/usr/lib/llvm-18/lib
+          export LEAN_CC=cc LIBRARY_PATH="$(lean --print-prefix)/lib:/usr/lib/llvm-18/lib"
           lake build && .lake/build/bin/tests
   offline-ca-windows:
     runs-on: windows-latest
