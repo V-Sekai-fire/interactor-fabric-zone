@@ -284,6 +284,61 @@ LEAN_EXPORT uint8_t fz_lean_journal_trial(uint32_t p_seed, uint8_t p_plant) {
 	return 1;
 }
 
+// A zone spawns, updates payloads and despawns through its own API, then a second zone reopens
+// from the first one's journal image. 1 when the reopened zone holds the same entities and
+// payloads. With `plant`, the second zone only opens the journal and skips the replay, which is
+// what zone_journal_open did before.
+LEAN_EXPORT uint8_t fz_lean_zone_reopen_trial(uint32_t p_seed, uint8_t p_plant) {
+	LoopbackNet net;
+	LoopbackNet::Endpoint &ea = net.add(0);
+	LoopbackNet::Endpoint &eb = net.add(1);
+	ZoneConfig c;
+	c.zone_id = 0;
+	c.zone_count = 1;
+	c.capacity = 16;
+	Zone a(c, &ea);
+	if (!a.open_journal({})) {
+		return 0;
+	}
+	std::vector<int> ids;
+	int n = 2 + int(mix(p_seed, 200) % 6);
+	for (int k = 0; k < n; k++) {
+		FabricEntity e;
+		e.global_id = 7000 + k;
+		e.payload[0] = mix(p_seed, 210 + uint32_t(k));
+		if (a.spawn(e) < 0) {
+			return 0;
+		}
+		ids.push_back(e.global_id);
+	}
+	uint32_t p[14] = {};
+	p[13] = mix(p_seed, 230);
+	a.set_payload(ids[0], p);
+	a.despawn(ids[n - 1]);
+	Zone b(c, &eb);
+	if (p_plant != 0) {
+		if (!b.journal().open(a.journal().image())) {
+			return 0;
+		}
+	} else if (!b.open_journal(a.journal().image())) {
+		return 0;
+	}
+	if (b.get_entity_count() != a.get_entity_count()) {
+		return 0;
+	}
+	for (int id : ids) {
+		const FabricEntity *x = a.entity(id);
+		const FabricEntity *y = b.entity(id);
+		if ((x == nullptr) != (y == nullptr)) {
+			return 0;
+		}
+		if (x != nullptr && std::memcmp(x->payload, y->payload, 56) != 0) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
 // Two players send poses to one zone; 1 when each receives the other's, root exact. With `plant`,
 // player 1 claims player 2's id, which the zone must refuse.
 LEAN_EXPORT uint8_t fz_lean_pose_relay_trial(uint32_t p_seed, uint8_t p_plant) {

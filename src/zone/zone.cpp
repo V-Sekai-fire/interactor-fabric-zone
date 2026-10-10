@@ -43,6 +43,35 @@ int Zone::spawn(const FabricEntity &p_entity) {
 	return idx;
 }
 
+bool Zone::despawn(int p_global_id) {
+	for (int i = 0; i < config.capacity; i++) {
+		if (slot_owned(slots[i]) && slots[i].entity.global_id == p_global_id) {
+			slots[i].active = false;
+			entity_count--;
+			free_hint = i;
+			zone_journal.despawn(i, p_global_id);
+			return true;
+		}
+	}
+	return false;
+}
+
+bool Zone::open_journal(const std::vector<uint8_t> &p_image) {
+	if (!zone_journal.open(p_image)) {
+		return false;
+	}
+	if (p_image.empty()) {
+		return true;
+	}
+	zone_journal.replay(config.capacity, slots.data(), entity_count);
+	for (int i = 0; i < config.capacity; i++) {
+		if (slots[i].active) {
+			slots[i].snap = zone::make_ghost_snap(slots[i].entity);
+		}
+	}
+	return true;
+}
+
 bool Zone::handover(int p_global_id, int p_target_zone) {
 	for (int i = 0; i < config.capacity; i++) {
 		EntitySlot &s = slots[i];

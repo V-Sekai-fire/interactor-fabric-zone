@@ -60,6 +60,10 @@ public:
 	// boundary crossing, made on request.
 	bool handover(int p_global_id, int p_target_zone);
 	bool set_payload(int p_global_id, const uint32_t p_payload[14]);
+	bool despawn(int p_global_id);
+	// Open the journal from a previous flush and replay it into the slots, so a reopened zone
+	// holds what it held. An empty image starts a new journal.
+	bool open_journal(const std::vector<uint8_t> &p_image);
 
 	State state_of(int p_global_id) const;
 	const FabricEntity *entity(int p_global_id) const;
