@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Tools from apt
-        run: sudo apt-get update -q && sudo apt-get install -y -q clang cmake ninja-build libc++-18-dev libc++abi-18-dev libgmp-dev libuv1-dev
+        run: sudo apt-get update -q && sudo apt-get install -y -q clang cmake ninja-build libgmp-dev libuv1-dev libssl-dev
       - name: Lean
         run: |
           curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
@@ -28,8 +28,15 @@ jobs:
         working-directory: tests
         # The zone's C++ uses libstdc++, and SQLite needs a newer glibc than Lean's bundled clang
         # links against, so the tests link with the system compiler and the system's crt and libraries.
+        # Lean's runtime is built against libc++ 22 and links it statically, so the link takes the
+        # toolchain's own libc++ archives. No system libc++ is installed: gcc searches its own
+        # directories before LIBRARY_PATH and would take that one. The toolchain's lib/ also holds an
+        # old glibc's crt, so only the libc++ archives are copied out. Lean 4.34 also links -lssl -lcrypto.
         run: |
-          export LEAN_CC=cc LIBRARY_PATH=/usr/lib/llvm-18/lib
+          L="$RUNNER_TEMP/leanlibcxx"; mkdir -p "$L"
+          for f in libc++ libc++abi libunwind; do cp -P "$(lean --print-prefix)/lib/$f".{a,so*} "$L/"; done
+          ls "$L"
+          export LEAN_CC=cc LIBRARY_PATH="$L" LD_LIBRARY_PATH="$L"
           lake build && .lake/build/bin/tests
   offline-ca-windows:
     runs-on: windows-latest
