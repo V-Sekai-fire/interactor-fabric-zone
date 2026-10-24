@@ -36,7 +36,7 @@ add_library(fz_quic STATIC src/transport/fz_quic.cpp)
 target_include_directories(fz_quic PUBLIC src/transport)
 target_link_libraries(fz_quic PUBLIC fz_picoquic fz_ca)
 
-# The zone and casync assets (RFD 2287 steps 5 and 6), ported from the fabric engine build's
+# The zone and casync assets (RFD66606-2287 steps 5 and 6), ported from the fabric engine build's
 # multiplayer_fabric and multiplayer_fabric_asset modules, with zstd, SQLite and r128 beside them.
 # No assembly fast paths and no threads: the same code in the guest and on the host.
 file(GLOB FZ_ZSTD_SOURCES thirdparty/zstd/common/*.c thirdparty/zstd/compress/*.c thirdparty/zstd/decompress/*.c)
