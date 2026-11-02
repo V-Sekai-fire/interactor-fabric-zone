@@ -2,7 +2,10 @@
 # guest, and the host confirms what it received is public. Three fresh sandboxes cover the entropy
 # sources: the guest's own, the host fallback, and the fallback with nothing fed (which must fail).
 #
-#   godot --headless --path project --script tests/ca_gate.gd
+#   godot --headless --path project --script tests/ca_gate.gd [-- --control=starved]
+#
+# --control=starved plants a defect for CI: the first sandbox's OS source is off and nothing is fed,
+# so its ca_open check must FAIL and the gate must exit non-zero.
 extends SceneTree
 
 var _failed := 0
@@ -28,6 +31,9 @@ func _initialize() -> void:
 		quit(1)
 		return
 	var now := int(Time.get_unix_time_from_system())
+	if "--control=starved" in OS.get_cmdline_user_args():
+		print("control: starved, the OS entropy source is off and nothing is fed")
+		sb.vmcall("ca_entropy_force_host", true)
 	var opened := str(sb.vmcall("ca_open", now, 86400))
 	print("open: ", opened)
 	_check("ca_open makes the session root from the guest's own entropy", opened == "ok entropy=os")

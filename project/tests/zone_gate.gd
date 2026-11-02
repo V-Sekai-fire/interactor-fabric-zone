@@ -1,6 +1,10 @@
 # zone.elf and asset.elf in the sandbox, headless: two zones and two asset guests, their frames
 # relayed on the host. Prints one line per check and RESULT: PASS or FAIL.
-#   godot --headless --path project --script tests/zone_gate.gd
+#   godot --headless --path project --script tests/zone_gate.gd [-- --control=drop_handover]
+#
+# --control=drop_handover plants a defect for CI: from the hand-over's tick on, the host drops every
+# frame the worker's zone sends the players' zone, so the players' zone must not own the garment and
+# the gate must exit non-zero.
 extends SceneTree
 
 var fails := 0
@@ -104,6 +108,9 @@ func _initialize() -> void:
 	var lost := 0
 	var ghost_seen := false
 	var pending := [[], []]
+	var drop_handover := "--control=drop_handover" in OS.get_cmdline_user_args()
+	if drop_handover:
+		print("control: drop_handover, frames from zone 1 to zone 0 are dropped from tick 10")
 	for t in 60:
 		if t == 10:
 			z[1].vmcall("zone_handover", gid, 0)
@@ -118,6 +125,8 @@ func _initialize() -> void:
 			image = taken
 		for i in 2:
 			for f in frames(out[i]):
+				if drop_handover and i == 1 and t >= 10:
+					continue
 				if f[0] == -1 or f[0] == 1 - i:
 					pending[1 - i].append([i, f[1], f[2]])
 		var s0: int = z[0].vmcall("zone_state", gid)
