@@ -8,7 +8,10 @@
 # each a fresh pair of peers, must fail: a client whose certificate comes from another CA, and a
 # client that trusts another root.
 #
-#   godot --headless --path project --script tests/quic_gate.gd
+#   godot --headless --path project --script tests/quic_gate.gd [-- --control=foreign_root]
+#
+# --control=foreign_root plants a defect for CI: the first client trusts another CA's root in place
+# of the session root's, so its handshake check must FAIL and the gate must exit non-zero.
 extends SceneTree
 
 const LOOPBACK := 0x7f000001
@@ -132,7 +135,10 @@ func _initialize() -> void:
 	var other_root := str(other.vmcall("ca_root"))
 
 	var server := _peer(true, SERVER_NAME, ca, root)
-	var client := _peer(false, CLIENT_NAME, ca, root)
+	var planted := "--control=foreign_root" in OS.get_cmdline_user_args()
+	if planted:
+		print("control: foreign_root, the first client trusts another CA's root")
+	var client := _peer(false, CLIENT_NAME, ca, other_root if planted else root)
 	_check("both peers open with certificates from the session root", server.opened == "ok" and client.opened == "ok")
 	var r := _handshake(server.sandbox, client.sandbox, "session root")
 	_check("the handshake completes over loopback UDP, both ends ready", r[0] == 2 and r[1] == 2)

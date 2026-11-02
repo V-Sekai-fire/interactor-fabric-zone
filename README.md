@@ -8,12 +8,22 @@ Each piece is C++ built as a riscv64 guest for the engine's sandbox: a session c
 
 ## Build and test
 
-The guests build with CMake and the org's riscv64 toolchain file:
+The guests build with CMake, the toolchain file from [repository-riscv64-sysroot](https://github.com/V-Sekai-fire/repository-riscv64-sysroot) (its pixi environment has the clang and lld) and the shared [contract-guest-runtime](https://github.com/V-Sekai-fire/contract-guest-runtime). Without `GUEST_RUNTIME_ROOT`, the vendored copy of the sandbox API builds them. Either way the result is rv64gc without V, with a double-precision Variant, stripped with `--strip-debug` only, and installed as `project/*.elf`:
 
 ```sh
-cmake -S . -B build/guest -G Ninja -DCMAKE_TOOLCHAIN_FILE=<riscv64-sysroot>/toolchain.cmake
+cmake -S . -B build/guest -G Ninja -DCMAKE_TOOLCHAIN_FILE=<riscv64-sysroot>/toolchain.cmake \
+  -DGUEST_RUNTIME_ROOT=<contract-guest-runtime>
 cmake --build build/guest
+python3 tools/check_elf.py --self-test project/*.elf
 ```
+
+The Godot gates (`project/tests/*_gate.gd`) run the ELFs headless under the pinned double-precision editor and godot-sandbox addon from service-godot-build. Each gate also runs once with a planted control that must fail. `tools/gates.sh` downloads both, checks their sha256, and runs every gate on Linux x86_64 or macOS:
+
+```sh
+bash tools/gates.sh            # or: bash tools/gates.sh quic
+```
+
+CI (`.github/workflows/guests.yml`) does both steps.
 
 The Lean tests build the host copy themselves:
 

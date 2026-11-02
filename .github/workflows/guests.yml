@@ -1,0 +1,80 @@
+# The riscv64 guests (ca, quic_peer, zone, asset) cross-built with the org's shared recipe, then the
+# Godot gates on those ELFs under the pinned double-precision editor and godot-sandbox addon. Each
+# gate also runs once with a planted control that must fail.
+name: guests
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: fabric-zone
+      - name: Tools from apt
+        run: sudo apt-get update -q && sudo apt-get install -y -q cmake ninja-build python3
+      - name: The riscv64 sysroot and the shared guest runtime
+        run: |
+          git clone -q --depth 1 https://github.com/V-Sekai-fire/repository-riscv64-sysroot sysroot
+          git clone -q --depth 1 https://github.com/V-Sekai-fire/contract-guest-runtime guest-runtime
+          git -C sysroot log -1 --format='sysroot %H'
+          git -C guest-runtime log -1 --format='guest-runtime %H'
+      - uses: prefix-dev/setup-pixi@v0.9.3
+        with:
+          manifest-path: sysroot/pixi.toml
+          cache: false
+      - name: clang and lld from the sysroot's pixi environment (Ubuntu's clang 18 is too old)
+        working-directory: sysroot
+        run: |
+          echo "$PWD/.pixi/envs/default/bin" >> "$GITHUB_PATH"
+          .pixi/envs/default/bin/clang++ --print-targets | grep -q riscv64
+          .pixi/envs/default/bin/clang++ --version | head -1
+      - name: Cross-build the four guests
+        run: |
+          cmake -S fabric-zone -B build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/sysroot/toolchain.cmake" \
+            -DGUEST_RUNTIME_ROOT="$GITHUB_WORKSPACE/guest-runtime"
+          cmake --build build
+          ls -l fabric-zone/project/*.elf
+      - name: Each ELF is the double, no-V, --strip-debug variant, and the check refuses planted defects
+        working-directory: fabric-zone
+        run: python3 tools/check_elf.py --self-test project/ca.elf project/quic_peer.elf project/zone.elf project/asset.elf
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guests-${{ github.sha }}
+          path: fabric-zone/project/*.elf
+          if-no-files-found: error
+
+  gate:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        gate: [ca, quic, zone]
+    name: gate (${{ matrix.gate }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: guests-${{ github.sha }}
+          path: project
+      - name: The ${{ matrix.gate }} gate and its planted control, on the pinned double editor
+        run: bash tools/gates.sh ${{ matrix.gate }}
+      - name: Keep the gate logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-${{ matrix.gate }}-${{ github.sha }}
+          path: build/gates/*.txt

@@ -11,10 +11,20 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 add_compile_options("-ffile-prefix-map=${CMAKE_SOURCE_DIR}/=")
 
 if(NOT FZ_NATIVE)
-	set(DOWNLOAD_RUNTIME_API OFF CACHE BOOL "" FORCE)
 	# The pinned editor is a double build, and its Sandbox refuses a guest whose Variant size differs.
 	set(DOUBLE_PRECISION ON CACHE BOOL "Build the guests for a double-precision engine")
-	add_subdirectory(vendor/sandbox-api/cmake sandbox_api)
+	# The org's other guests load without the V extension, and a guest keeps .symtab (--strip-debug).
+	set(SANDBOX_RISCV_EXT_V OFF CACHE BOOL "Enable RISC-V V (vector) extension")
+	set(STRIPPED ON CACHE BOOL "Strip debug sections with --strip-debug")
+	# GUEST_RUNTIME_ROOT names a contract-guest-runtime checkout, the org's shared guest recipe (CI
+	# uses it). Without one the vendored copy of the same sandbox API builds the guests.
+	set(GUEST_RUNTIME_ROOT "" CACHE PATH "A contract-guest-runtime checkout")
+	if(GUEST_RUNTIME_ROOT)
+		include(${GUEST_RUNTIME_ROOT}/cmake/guest_runtime.cmake)
+	else()
+		set(DOWNLOAD_RUNTIME_API OFF CACHE BOOL "" FORCE)
+		add_subdirectory(vendor/sandbox-api/cmake sandbox_api)
+	endif()
 endif()
 
 include(cmake/fz_mbedtls.cmake)
