@@ -1,6 +1,6 @@
 # The Lean tests (tests/) against the native build of the same C++ the guests compile, and the
-# offline root's seed store on each OS. The riscv64 guest build needs the org's sysroot and runs on
-# a desk; see README.md.
+# offline root's seed store on each OS. guests.yml cross-builds the riscv64 guests and runs the Godot
+# gates on them.
 name: tests
 on:
   push:
