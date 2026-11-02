@@ -7,6 +7,7 @@
 
 #include <errno.h>
 #include <string.h>
+#include <time.h>
 #ifdef _WIN32
 #include <windows.h>
 #include <bcrypt.h>
@@ -132,3 +133,15 @@ extern "C" int mbedtls_platform_get_entropy(psa_driver_get_entropy_flags_t p_fla
 	*r_estimate_bits = 0;
 	return PSA_ERROR_INSUFFICIENT_ENTROPY;
 }
+
+#if defined(__riscv)
+// mbedtls_time() in the guests; see src/mbedtls_config/fz_psa_config.h.
+extern "C" time_t fz_wall_time(time_t *r_time) {
+	struct timespec now = {};
+	time_t t = clock_gettime(CLOCK_REALTIME, &now) == 0 ? time_t(now.tv_sec) : time_t(-1);
+	if (r_time != nullptr) {
+		*r_time = t;
+	}
+	return t;
+}
+#endif
