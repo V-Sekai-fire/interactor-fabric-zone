@@ -17,7 +17,7 @@ cmake --build build/guest
 python3 tools/check_elf.py --self-test project/*.elf
 ```
 
-The Godot gates (`project/tests/*_gate.gd`) run the ELFs headless under the pinned double-precision editor and godot-sandbox addon from service-godot-build. Each gate also runs once with a planted control that must fail. `tools/gates.sh` downloads both, checks their sha256, and runs every gate on Linux x86_64 or macOS:
+The Godot gates (`project/tests/*_gate.gd`) run the ELFs headless under the pinned double-precision editor and godot-sandbox addon from service-godot-build. Each gate also runs once with a planted control that must fail. `tools/gates.sh` downloads both, checks their sha256, and runs every gate on Linux x86_64 or macOS. An engine with the sandbox module built in, such as an entities-zone build passed as `GODOT=`, runs the gates with no addon:
 
 ```sh
 bash tools/gates.sh            # or: bash tools/gates.sh quic

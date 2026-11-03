@@ -53,8 +53,20 @@ fi
 "$GODOT" --headless --version | tee "$work/version.txt"
 grep -q '\.double\.' "$work/version.txt" || { echo "FAIL $GODOT is not a double build"; exit 1; }
 
+# An engine with the sandbox module built in (entities-zone) needs no addon: loading the addon on
+# top registers Sandbox twice, and every vmcall fails.
 bin=project/addons/godot_sandbox/bin
-mkdir -p "$bin" project/.godot
+mkdir -p project/.godot
+rm -rf project/addons/godot_sandbox project/.godot/extension_list.cfg
+probe=$(mktemp -d)
+printf 'config_version=5\n' > "$probe/project.godot"
+printf 'extends SceneTree\nfunc _init():\n\tprint("SANDBOX_BUILTIN=", ClassDB.class_exists("Sandbox"))\n\tquit()\n' > "$probe/p.gd"
+builtin=$($wall "$GODOT" --headless --path "$probe" --script p.gd 2>/dev/null | grep -o 'SANDBOX_BUILTIN=[a-z]*' || true)
+rm -rf "$probe"
+if [ "$builtin" = "SANDBOX_BUILTIN=true" ]; then
+  echo "sandbox: built into the engine, no addon"
+else
+mkdir -p "$bin"
 fetch "$base/$addon_tag/$addon" "$work/$addon" "$addon_sha"
 cp "$work/$addon" "$bin/$addon"
 cat > "$bin/godot-riscv.gdextension" <<'EOF'
@@ -71,6 +83,7 @@ macos.debug.double = "./libgodot_riscv.macos.template_release.double.universal"
 macos.release.double = "./libgodot_riscv.macos.template_release.double.universal"
 EOF
 echo "res://addons/godot_sandbox/bin/godot-riscv.gdextension" > project/.godot/extension_list.cfg
+fi
 
 for elf in ca quic_peer zone asset; do
   [ -f "project/$elf.elf" ] || { echo "FAIL no project/$elf.elf: build the guests first (README.md)"; exit 1; }
