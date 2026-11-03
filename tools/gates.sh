@@ -15,7 +15,7 @@ work=${WORK:-$root/build/gates}
 mkdir -p "$work"
 
 base=https://github.com/V-Sekai-fire/entities-zone/releases/download
-engine_tag=${ZONE_TAG:-v0.0.0-20261103095332-a2f6cbc452aa}
+engine_tag=${ZONE_TAG:-v0.0.0-20261103154300-3eebc87b2677}
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) engine=godot.linuxbsd.editor.double.x86_64 fdb=libfdb_c.so ;;
   Darwin-*) engine=godot.macos.editor.double.arm64 fdb= ;;
