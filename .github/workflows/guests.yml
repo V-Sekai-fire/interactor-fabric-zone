@@ -1,5 +1,5 @@
 # The riscv64 guests (ca, quic_peer, zone, asset) cross-built with the org's shared recipe, then the
-# Godot gates on those ELFs under the pinned double-precision editor and godot-sandbox addon. Each
+# Godot gates on those ELFs under the entities-zone double editor, which has the sandbox built in. Each
 # gate also runs once with a planted control that must fail.
 name: guests
 on:
