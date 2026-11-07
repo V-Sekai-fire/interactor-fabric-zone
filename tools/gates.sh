@@ -1,6 +1,6 @@
 #!/bin/bash
-# The Godot gates on the guest ELFs in project/, under the pinned double-precision editor and the
-# godot-sandbox addon from service-godot-build, each file checked against its pinned sha256.
+# The Godot gates on the guest ELFs in project/, under the double-precision editor an entities-zone
+# release publishes, which has the sandbox built in, each file checked against the release's SHA256SUMS.
 #
 #   bash tools/gates.sh [ca|quic|zone ...]      (default: all three)
 #
@@ -14,27 +14,19 @@ root=$PWD
 work=${WORK:-$root/build/gates}
 mkdir -p "$work"
 
-base=https://github.com/V-Sekai-fire/service-godot-build/releases/download
-engine_tag=v20260930-double.1
-addon_tag=v20261019-addon.1
+base=https://github.com/V-Sekai-fire/entities-zone/releases/download
+engine_tag=${ZONE_TAG:-v0.0.0-20261106225526-d632cdf2be4c}
 case "$(uname -s)-$(uname -m)" in
-  Linux-x86_64)
-    engine=godot.linuxbsd.editor.double.x86_64
-    engine_sha=37c6962fcc76d1773a596440f310f52ad5cf18011e74a712a5b465c3240e919b
-    addon=libgodot_riscv.linux.template_release.double.x86_64.so
-    addon_sha=8ab42de8462452e22bc091af0aedf2446934d8ee691adcd1bbccb9818642aed6 ;;
-  Darwin-*)
-    engine=godot.macos.editor.double.arm64
-    engine_sha=5f6f2df33708d8f522e0cb5f40af58bd44c1eccb2dda7128081f4056b1de8dce
-    addon=libgodot_riscv.macos.template_release.double.universal
-    addon_sha=14f542887f322bbe9847fa0f24734a46d68458db366f139118b45fc8eb7479f0 ;;
-  *) echo "FAIL no pinned double editor for $(uname -s)-$(uname -m)"; exit 1 ;;
+  Linux-x86_64) engine=godot.linuxbsd.editor.double.x86_64 fdb=libfdb_c.so ;;
+  Darwin-*) engine=godot.macos.editor.double.arm64 fdb= ;;
+  *) echo "FAIL no double editor for $(uname -s)-$(uname -m)"; exit 1 ;;
 esac
 
 # A wall clock per Godot run; macOS has no timeout(1) unless coreutils is installed.
 wall=$(command -v timeout || command -v gtimeout || true)
 wall=${wall:+$wall 300}
 sum256() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
+pinned() { awk -v f="$1" '$2 == f || $2 == "*" f { print $1 }' "$work/SHA256SUMS"; }
 fetch() { # url path sha
   if [ ! -f "$2" ] || [ "$(sum256 "$2")" != "$3" ]; then
     curl -fsSL --retry 3 -o "$2.part" "$1"
@@ -46,16 +38,19 @@ fetch() { # url path sha
 }
 
 if [ -z "${GODOT:-}" ]; then
-  fetch "$base/$engine_tag/$engine" "$work/$engine" "$engine_sha"
+  curl -fsSL --retry 3 -o "$work/SHA256SUMS" "$base/$engine_tag/SHA256SUMS" \
+    || { echo "FAIL entities-zone $engine_tag has no published SHA256SUMS"; exit 1; }
+  for f in $engine $fdb; do
+    sha=$(pinned "$f"); [ -n "$sha" ] || { echo "FAIL $f is not in $engine_tag's SHA256SUMS"; exit 1; }
+    fetch "$base/$engine_tag/$f" "$work/$f" "$sha"
+  done
   chmod +x "$work/$engine"
+  export LD_LIBRARY_PATH="$work${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
   GODOT=$work/$engine
 fi
 "$GODOT" --headless --version | tee "$work/version.txt"
 grep -q '\.double\.' "$work/version.txt" || { echo "FAIL $GODOT is not a double build"; exit 1; }
 
-# An engine with the sandbox module built in (entities-zone) needs no addon: loading the addon on
-# top registers Sandbox twice, and every vmcall fails.
-bin=project/addons/godot_sandbox/bin
 mkdir -p project/.godot
 rm -rf project/addons/godot_sandbox project/.godot/extension_list.cfg
 probe=$(mktemp -d)
@@ -63,27 +58,7 @@ printf 'config_version=5\n' > "$probe/project.godot"
 printf 'extends SceneTree\nfunc _init():\n\tprint("SANDBOX_BUILTIN=", ClassDB.class_exists("Sandbox"))\n\tquit()\n' > "$probe/p.gd"
 builtin=$($wall "$GODOT" --headless --path "$probe" --script p.gd 2>/dev/null | grep -o 'SANDBOX_BUILTIN=[a-z]*' || true)
 rm -rf "$probe"
-if [ "$builtin" = "SANDBOX_BUILTIN=true" ]; then
-  echo "sandbox: built into the engine, no addon"
-else
-mkdir -p "$bin"
-fetch "$base/$addon_tag/$addon" "$work/$addon" "$addon_sha"
-cp "$work/$addon" "$bin/$addon"
-cat > "$bin/godot-riscv.gdextension" <<'EOF'
-[configuration]
-
-entry_symbol = "riscv_library_init"
-compatibility_minimum = "4.4"
-
-[libraries]
-
-linux.debug.double.x86_64 = "./libgodot_riscv.linux.template_release.double.x86_64.so"
-linux.release.double.x86_64 = "./libgodot_riscv.linux.template_release.double.x86_64.so"
-macos.debug.double = "./libgodot_riscv.macos.template_release.double.universal"
-macos.release.double = "./libgodot_riscv.macos.template_release.double.universal"
-EOF
-echo "res://addons/godot_sandbox/bin/godot-riscv.gdextension" > project/.godot/extension_list.cfg
-fi
+[ "$builtin" = "SANDBOX_BUILTIN=true" ] || { echo "FAIL $GODOT has no Sandbox class built in"; exit 1; }
 
 for elf in ca quic_peer zone asset; do
   [ -f "project/$elf.elf" ] || { echo "FAIL no project/$elf.elf: build the guests first (README.md)"; exit 1; }
