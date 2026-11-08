@@ -116,6 +116,9 @@ Zone::State Zone::state_of(int p_global_id) const {
 	return ABSENT;
 }
 
+// Aabb coordinates are micrometres.
+static constexpr double UM_TO_M = 0.000001;
+
 bool Zone::player_ghost(uint32_t p_player, PlayerGhost &r_out) const {
 	std::map<uint32_t, int>::const_iterator it = player_slot.find(p_player);
 	if (it == player_slot.end() || !slots[it->second].active) {
@@ -125,16 +128,15 @@ bool Zone::player_ghost(uint32_t p_player, PlayerGhost &r_out) const {
 	GhostSnap snap = s.snap;
 	snap.ticks_since_snap = snap.per_delta;
 	Aabb a = zone::ghost_aabb_from_snap(snap);
-	const double u = 0.000001;
 	r_out.v[0] = s.entity.vx;
 	r_out.v[1] = s.entity.vy;
 	r_out.v[2] = s.entity.vz;
-	r_out.box[0] = double(a.min_x) * u;
-	r_out.box[1] = double(a.min_y) * u;
-	r_out.box[2] = double(a.min_z) * u;
-	r_out.box[3] = double(a.max_x) * u;
-	r_out.box[4] = double(a.max_y) * u;
-	r_out.box[5] = double(a.max_z) * u;
+	r_out.box[0] = double(a.min_x) * UM_TO_M;
+	r_out.box[1] = double(a.min_y) * UM_TO_M;
+	r_out.box[2] = double(a.min_z) * UM_TO_M;
+	r_out.box[3] = double(a.max_x) * UM_TO_M;
+	r_out.box[4] = double(a.max_y) * UM_TO_M;
+	r_out.box[5] = double(a.max_z) * UM_TO_M;
 	r_out.horizon = snap.per_delta;
 	return true;
 }
@@ -249,7 +251,7 @@ void Zone::handle_players() {
 			const double ov[3] = { e.vx, e.vy, e.vz };
 			double na[3];
 			for (int i = 0; i < 3; i++) {
-				na[i] = std::clamp((nv[i] - ov[i]) * inv, -2.0 * zone::V_MAX, 2.0 * zone::V_MAX);
+				na[i] = std::clamp((nv[i] - ov[i]) * inv, -PLAYER_ACCEL_MAX, PLAYER_ACCEL_MAX);
 			}
 			e.vx = std::clamp(nv[0], -zone::V_MAX, zone::V_MAX);
 			e.vy = std::clamp(nv[1], -zone::V_MAX, zone::V_MAX);

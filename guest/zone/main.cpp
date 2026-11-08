@@ -37,8 +37,12 @@ static Variant zone_open(int zone_id, int zone_count, int capacity, int hz) {
 	fabric::ZoneConfig c;
 	c.zone_id = zone_id;
 	c.zone_count = zone_count;
-	c.capacity = capacity > 0 ? capacity : 1800;
-	c.hz = hz > 0 ? uint32_t(hz) : 60;
+	if (capacity > 0) {
+		c.capacity = capacity;
+	}
+	if (hz > 0) {
+		c.hz = uint32_t(hz);
+	}
 	c.plant_zero_player_velocity = g_plant_zero_velocity;
 	g_zone.reset(new fabric::Zone(c, &g_transport));
 	return text("OK zone " + std::to_string(zone_id) + " of " + std::to_string(zone_count));
@@ -173,16 +177,24 @@ static Variant zone_player_pose(int player, double x, double y, double z) {
 	return Variant(true);
 }
 
-// A player's held motion and ghost box: 10 f64 [v x y z][box min x y z, max x y z][horizon ticks], or empty.
+// A player's held motion and ghost box as 10 doubles: [vx vy vz][min x y z][max x y z][horizon ticks],
+// or empty. The host reads them by index (tests/mm_gate.gd names them).
 static Variant zone_player_ghost(int player) {
-	std::vector<uint8_t> out;
+	std::vector<double> out;
 	fabric::Zone::PlayerGhost g;
 	if (g_zone && g_zone->player_ghost(uint32_t(player), g)) {
-		double d[10] = { g.v[0], g.v[1], g.v[2], g.box[0], g.box[1], g.box[2], g.box[3], g.box[4], g.box[5], double(g.horizon) };
-		out.resize(sizeof(d));
-		std::memcpy(out.data(), d, sizeof(d));
+		out = { g.v[0], g.v[1], g.v[2], g.box[0], g.box[1], g.box[2], g.box[3], g.box[4], g.box[5], double(g.horizon) };
 	}
-	return Variant(PackedArray<uint8_t>(out));
+	return Variant(PackedArray<double>(out));
+}
+
+// The limits the zone applies, so a host does not copy them: [V_MAX m/tick, acceleration range m/tick^2,
+// hz, player peer base]. Of the open zone, or the defaults before zone_open.
+static Variant zone_limits() {
+	const fabric::ZoneConfig defaults;
+	const fabric::ZoneConfig &c = g_zone ? g_zone->get_config() : defaults;
+	std::vector<double> out = { fabric::zone::V_MAX, fabric::Zone::PLAYER_ACCEL_MAX, double(c.hz), double(c.player_peer_base) };
+	return Variant(PackedArray<double>(out));
 }
 
 // Control only: call before zone_open. Players then hold zero velocity, as before #505.
@@ -216,7 +228,8 @@ int main() {
 	ADD_API_FUNCTION(zone_state, "int", "int global_id", "0 absent, 1 owned, 2 staging, 3 incoming");
 	ADD_API_FUNCTION(zone_ghosts, "PackedByteArray", "", "Rows other zones published that this zone sees");
 	ADD_API_FUNCTION(zone_player_pose, "bool", "int player, float x, float y, float z", "A player's root position, as that player's peer would send it");
-	ADD_API_FUNCTION(zone_player_ghost, "PackedByteArray", "int player", "A player's held velocity and ghost box over the snap horizon");
+	ADD_API_FUNCTION(zone_player_ghost, "PackedFloat64Array", "int player", "A player's held velocity and ghost box over the snap horizon");
+	ADD_API_FUNCTION(zone_limits, "PackedFloat64Array", "", "V_MAX, acceleration range, hz and player peer base the zone applies");
 	ADD_API_FUNCTION(zone_plant_zero_velocity, "bool", "bool on", "Control: players hold zero velocity (call before zone_open)");
 	ADD_API_FUNCTION(zone_status, "String", "", "Counters");
 	halt();

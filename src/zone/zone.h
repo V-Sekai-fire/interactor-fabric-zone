@@ -49,6 +49,8 @@ public:
 	};
 
 	static constexpr int PLAYER_ENTITY_BASE = 2000000;
+	// The range A_SCALE quantizes an acceleration over, in m/tick^2; a derived player acceleration is clamped to it.
+	static constexpr real_t PLAYER_ACCEL_MAX = 2.0 * zone::V_MAX;
 	static constexpr uint32_t PLAYER_SLOT_TIMEOUT_SECONDS = 3;
 	static constexpr uint32_t PING_INTERVAL_SECONDS = 8;
 	static constexpr int MAX_MIGRATIONS_PER_TICK = 50;
@@ -83,6 +85,7 @@ public:
 	bool player_ghost(uint32_t p_player, PlayerGhost &r_out) const;
 	// The transport peer of a player: the one mapping handle_players checks a pose's id against.
 	int player_peer(uint32_t p_player) const { return config.player_peer_base + int(p_player); }
+	const ZoneConfig &get_config() const { return config; }
 	uint32_t get_tick() const { return tick_count; }
 	int get_entity_count() const { return entity_count; }
 	int ghost_pairs() const { return zone::count_ghost_overlapping_pairs(slots.data(), config.capacity); }
