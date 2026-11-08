@@ -169,7 +169,7 @@ static Variant zone_player_pose(int player, double x, double y, double z) {
 	p.root[1] = y;
 	p.root[2] = z;
 	std::vector<uint8_t> b = fabric::pose::encode(p);
-	g_transport.receive(1000 + player, fabric::CH_PLAYER, b.data(), int(b.size()));
+	g_transport.receive(g_zone->player_peer(uint32_t(player)), fabric::CH_PLAYER, b.data(), int(b.size()));
 	return Variant(true);
 }
 
