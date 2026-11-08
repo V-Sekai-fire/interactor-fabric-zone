@@ -14,6 +14,8 @@ var checked := 0
 # walk, run, turn: a script error skips the rest without a FAIL line, so fewer checks fail.
 const CHECKS := 6
 const EPS := 1.0e-4
+# The zone's V_MAX: PBVH_V_MAX_PHYSICAL_DEFAULT (500000 um/tick) in m/tick, clamped per axis as zone.cpp does.
+const V_MAX := 0.5
 
 func check(what: String, ok: bool) -> void:
 	checked += 1
@@ -81,7 +83,8 @@ func scenario(mm, name: String, speed: float, turn_at: float, turn_to: float, co
 	var vbad := 0
 	var vmax := 0.0
 	for i in range(2, pos.size()):
-		var want: Vector2 = (pos[i] - pos[i - 1]).limit_length(0.5)
+		var d: Vector2 = pos[i] - pos[i - 1]
+		var want := Vector2(clampf(d.x, -V_MAX, V_MAX), clampf(d.y, -V_MAX, V_MAX))
 		vmax = max(vmax, want.length())
 		if (vels[i] - want).length() > 1.0e-6:
 			vbad += 1
