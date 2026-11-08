@@ -81,6 +81,8 @@ public:
 		uint32_t horizon = 0;
 	};
 	bool player_ghost(uint32_t p_player, PlayerGhost &r_out) const;
+	// The transport peer of a player: the one mapping handle_players checks a pose's id against.
+	int player_peer(uint32_t p_player) const { return config.player_peer_base + int(p_player); }
 	uint32_t get_tick() const { return tick_count; }
 	int get_entity_count() const { return entity_count; }
 	int ghost_pairs() const { return zone::count_ghost_overlapping_pairs(slots.data(), config.capacity); }

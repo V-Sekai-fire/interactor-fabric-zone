@@ -291,7 +291,7 @@ void Zone::handle_interest() {
 		}
 		// Relay neighbour rows to this zone's players, as the fabric's AOI band relay does.
 		for (const std::pair<const uint32_t, int> &pl : player_slot) {
-			transport->send(config.player_peer_base + int(pl.first), CH_INTEREST, p.bytes.data(), int(p.bytes.size()));
+			transport->send(player_peer(pl.first), CH_INTEREST, p.bytes.data(), int(p.bytes.size()));
 		}
 	}
 	for (std::map<int, Ghost>::iterator it = ghost_rows.begin(); it != ghost_rows.end();) {
@@ -342,7 +342,7 @@ void Zone::publish_interest() {
 		std::vector<uint8_t> enc = pose::encode(pp.second);
 		for (const std::pair<const uint32_t, int> &pl : player_slot) {
 			if (pl.first != pp.first) {
-				transport->send(config.player_peer_base + int(pl.first), CH_PLAYER, enc.data(), int(enc.size()));
+				transport->send(player_peer(pl.first), CH_PLAYER, enc.data(), int(enc.size()));
 			}
 		}
 	}
