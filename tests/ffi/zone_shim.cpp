@@ -65,6 +65,28 @@ LEAN_EXPORT lean_obj_res fz_lean_sha512_256(b_lean_obj_arg p_data) {
 	return bytes_obj(std::vector<uint8_t>(id.begin(), id.end()));
 }
 
+// The zones of the two-zone trials: the players' zone and the worker's. Ids are set once, in the
+// configs, and everything else (endpoints, hand-over targets) reads them from there.
+static constexpr int PLAYERS_ZONE = 0;
+static constexpr int WORKER_ZONE = 1;
+// Entity id bases, per trial. Garments sit above the whole player range (PLAYER_ENTITY_BASE + a 16-bit
+// player id), the journal and reopen trials below it.
+static constexpr int PLAYER_ID_SPAN = 1 << 16;
+static constexpr int HANDOVER_ID_BASE = 3000000;
+static constexpr int PAYLOAD_ID_BASE = 3100000;
+static constexpr int JOURNAL_ID_BASE = 5000;
+static constexpr int REOPEN_ID_BASE = 7000;
+static_assert(HANDOVER_ID_BASE >= Zone::PLAYER_ENTITY_BASE + PLAYER_ID_SPAN, "garment ids collide with players");
+static_assert(PAYLOAD_ID_BASE >= Zone::PLAYER_ENTITY_BASE + PLAYER_ID_SPAN, "garment ids collide with players");
+static_assert(JOURNAL_ID_BASE < Zone::PLAYER_ENTITY_BASE && REOPEN_ID_BASE < Zone::PLAYER_ENTITY_BASE, "ids collide with players");
+// Ticks a two-zone trial runs, and how far in (in 1/100 m) a spawned garment sits: inside the scene.
+static constexpr int TRIAL_TICKS = 90;
+static constexpr int HANDOVER_TICK = 5; // the payload trial hands over on this tick
+static constexpr double SPAWN_MARGIN = 1.0;
+static constexpr int SPAWN_STEPS = int((zone::SIM_BOUND - 2.0 * SPAWN_MARGIN) * 100.0);
+static constexpr double GARMENT_HEIGHT_MAX = 2.0;
+static constexpr int HEIGHT_STEPS = int(GARMENT_HEIGHT_MAX * 100.0);
+
 // Two zones on a lossy network hand one entity over. Returns worst owners (bits 0-1), a lost
 // tick (bit 2), and the players' zone owning it at the end (bit 3).
 LEAN_EXPORT uint32_t fz_lean_handover_trial(uint32_t p_seed, uint8_t p_plant) {
@@ -72,29 +94,29 @@ LEAN_EXPORT uint32_t fz_lean_handover_trial(uint32_t p_seed, uint8_t p_plant) {
 	net.set_delay(1 + int(mix(p_seed, 10) % 4));
 	uint32_t seed = p_seed;
 	net.set_drop(&no_drop_migration, &seed);
-	LoopbackNet::Endpoint &e0 = net.add(0);
-	LoopbackNet::Endpoint &e1 = net.add(1);
 	ZoneConfig c0;
-	c0.zone_id = 0;
+	c0.zone_id = PLAYERS_ZONE;
 	c0.zone_count = 2;
 	c0.capacity = 32;
 	ZoneConfig c1 = c0;
-	c1.zone_id = 1;
+	c1.zone_id = WORKER_ZONE;
 	c1.plant_double_handover = p_plant != 0;
+	LoopbackNet::Endpoint &e0 = net.add(c0.zone_id);
+	LoopbackNet::Endpoint &e1 = net.add(c1.zone_id);
 	Zone players(c0, &e0);
 	Zone worker(c1, &e1);
 	FabricEntity g;
-	g.global_id = 3000000 + int(mix(p_seed, 11) % 1000);
-	g.cx = 1.0 + double(mix(p_seed, 12) % 1300) / 100.0;
-	g.cy = double(mix(p_seed, 13) % 200) / 100.0;
+	g.global_id = HANDOVER_ID_BASE + int(mix(p_seed, 11) % 1000);
+	g.cx = SPAWN_MARGIN + double(mix(p_seed, 12) % SPAWN_STEPS) / 100.0;
+	g.cy = double(mix(p_seed, 13) % HEIGHT_STEPS) / 100.0;
 	g.payload[0] = 5u << 24;
 	worker.spawn(g);
 	int handover_at = 2 + int(mix(p_seed, 14) % 40);
 	int worst = 0;
 	bool lost = false;
-	for (int t = 0; t < 90; t++) {
+	for (int t = 0; t < TRIAL_TICKS; t++) {
 		if (t == handover_at) {
-			worker.handover(g.global_id, 0);
+			worker.handover(g.global_id, c0.zone_id);
 		}
 		players.tick();
 		worker.tick();
@@ -116,31 +138,31 @@ LEAN_EXPORT uint8_t fz_lean_handover_payload_trial(uint32_t p_seed, uint8_t p_pl
 	net.set_delay(1 + int(mix(p_seed, 300) % 4));
 	uint32_t seed = p_seed;
 	net.set_drop(&no_drop_migration, &seed);
-	LoopbackNet::Endpoint &e0 = net.add(0);
-	LoopbackNet::Endpoint &e1 = net.add(1);
-	LoopbackNet::Endpoint &e2 = net.add(2);
 	ZoneConfig c0;
-	c0.zone_id = 0;
+	c0.zone_id = PLAYERS_ZONE;
 	c0.zone_count = 2;
 	c0.capacity = 32;
 	ZoneConfig c1 = c0;
-	c1.zone_id = 1;
+	c1.zone_id = WORKER_ZONE;
 	c1.plant_intent_without_payload = p_plant != 0;
+	LoopbackNet::Endpoint &e0 = net.add(c0.zone_id);
+	LoopbackNet::Endpoint &e1 = net.add(c1.zone_id);
+	LoopbackNet::Endpoint &e2 = net.add(c1.zone_id + 1); // the reopened zone's own endpoint
 	Zone players(c0, &e0);
 	Zone worker(c1, &e1);
 	if (!players.open_journal({})) {
 		return 0;
 	}
 	FabricEntity g;
-	g.global_id = 3100000 + int(mix(p_seed, 301) % 1000);
-	g.cx = 1.0 + double(mix(p_seed, 302) % 1300) / 100.0;
+	g.global_id = PAYLOAD_ID_BASE + int(mix(p_seed, 301) % 1000);
+	g.cx = SPAWN_MARGIN + double(mix(p_seed, 302) % SPAWN_STEPS) / 100.0;
 	for (int k = 0; k < 14; k++) {
 		g.payload[k] = mix(p_seed, 310 + uint32_t(k)) | 1u;
 	}
 	worker.spawn(g);
-	for (int t = 0; t < 90; t++) {
-		if (t == 5) {
-			worker.handover(g.global_id, 0);
+	for (int t = 0; t < TRIAL_TICKS; t++) {
+		if (t == HANDOVER_TICK) {
+			worker.handover(g.global_id, c0.zone_id);
 		}
 		players.tick();
 		worker.tick();
@@ -301,7 +323,7 @@ LEAN_EXPORT uint8_t fz_lean_journal_trial(uint32_t p_seed, uint8_t p_plant) {
 		if (op <= 1 && !live[slot].active) {
 			live[slot] = EntitySlot();
 			live[slot].active = true;
-			live[slot].entity.global_id = 5000 + s;
+			live[slot].entity.global_id = JOURNAL_ID_BASE + s;
 			live[slot].entity.cx = double(s);
 			j.spawn(slot, live[slot].entity);
 		} else if (op == 1 || (op == 2 && live[slot].active)) {
@@ -343,12 +365,12 @@ LEAN_EXPORT uint8_t fz_lean_journal_trial(uint32_t p_seed, uint8_t p_plant) {
 // what zone_journal_open did before.
 LEAN_EXPORT uint8_t fz_lean_zone_reopen_trial(uint32_t p_seed, uint8_t p_plant) {
 	LoopbackNet net;
-	LoopbackNet::Endpoint &ea = net.add(0);
-	LoopbackNet::Endpoint &eb = net.add(1);
 	ZoneConfig c;
-	c.zone_id = 0;
+	c.zone_id = PLAYERS_ZONE;
 	c.zone_count = 1;
 	c.capacity = 16;
+	LoopbackNet::Endpoint &ea = net.add(c.zone_id);
+	LoopbackNet::Endpoint &eb = net.add(c.zone_id + 1); // the second zone's own endpoint
 	Zone a(c, &ea);
 	if (!a.open_journal({})) {
 		return 0;
@@ -357,7 +379,7 @@ LEAN_EXPORT uint8_t fz_lean_zone_reopen_trial(uint32_t p_seed, uint8_t p_plant) 
 	int n = 2 + int(mix(p_seed, 200) % 6);
 	for (int k = 0; k < n; k++) {
 		FabricEntity e;
-		e.global_id = 7000 + k;
+		e.global_id = REOPEN_ID_BASE + k;
 		e.payload[0] = mix(p_seed, 210 + uint32_t(k));
 		if (a.spawn(e) < 0) {
 			return 0;

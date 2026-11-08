@@ -12,7 +12,7 @@ extends SceneTree
 var fails := 0
 var checked := 0
 # walk, run, turn: a script error skips the rest without a FAIL line, so fewer checks fail.
-const CHECKS := 6
+const CHECKS := 7
 # Tolerances, not copies of zone values: the ghost box is integer micrometres (1e-6 m), and the held
 # velocity is derived in doubles from f32 positions.
 const BOX_EPS := 1.0e-4
@@ -35,9 +35,23 @@ const G_MAX_X := 6
 const G_MAX_Z := 8
 const G_HORIZON := 9
 const G_COUNT := 10
-# The speeds (m/s) of mm.elf's own run_mm.gd walk and run cases.
-const WALK_SPEED := 1.3
-const RUN_SPEED := 3.5
+# Speeds come from mm.elf, not from this file. Walk is the stand mode's median moving speed
+# (mm_modes: "name poses median"). Run is a high quantile of the moving clips' p90 speeds, the
+# speed each clip sustains (mm_clips: "name frames seconds speed dx dz median p90"). A clip's
+# median is not used: it includes the starts and stops, so even run clips read slow. The
+# quantile is a choice about this test: the fastest clips, not the single fastest.
+const RUN_QUANTILE := 0.9
+# A clip counts as moving above this speed (m/s), as mm_modes counts a moving pose.
+const MOVING_MIN := 0.2
+# Run must clearly outpace walk, or the run case would test walking twice.
+const RUN_OVER_WALK_MIN := 1.5
+# mm_step arguments: mode 0 is stand (mm_core's Mode enum), no jump, and no turn is a negative time.
+const STAND_MODE := 0
+const NO_JUMP := 0
+const NO_TURN := -1.0
+# The turn case: at this time the heading changes to this angle.
+const TURN_AT_S := 3.0
+const TURN_TO := PI / 2
 
 func check(what: String, ok: bool) -> void:
 	checked += 1
@@ -81,6 +95,24 @@ func load_clips(mm) -> void:
 			mm.vmcall("mm_add_clip", k, "\n".join(names), parents, xf, fps, loop)
 	print(mm.vmcall("mm_bake"))
 
+# [walk, run] in m/s, derived from the baked database; [] when it has no moving stand poses or clips.
+func speeds(mm) -> Array:
+	var walk := 0.0
+	for line in str(mm.vmcall("mm_modes")).split("\n", false):
+		var w := line.split(" ")
+		if w[0] == "stand":
+			walk = float(w[2])
+	var peaks: Array = []
+	for line in str(mm.vmcall("mm_clips")).split("\n", false):
+		var w := line.split(" ")
+		var med := float(w[w.size() - 2])
+		if med > MOVING_MIN:
+			peaks.append(float(w[w.size() - 1]))
+	if walk <= 0.0 or peaks.is_empty():
+		return []
+	peaks.sort()
+	return [walk, peaks[int(RUN_QUANTILE * (peaks.size() - 1))]]
+
 # [name, speed, turn_at, turn_to] as in mm.elf's own run_mm.gd
 func scenario(mm, name: String, speed: float, turn_at: float, turn_to: float, control: bool) -> void:
 	var z = sandbox("res://zone.elf")
@@ -95,8 +127,8 @@ func scenario(mm, name: String, speed: float, turn_at: float, turn_to: float, co
 	var boxes: Array = []
 	var vels: Array = []
 	for i in int(hz) * SECONDS:
-		var heading := turn_to if (turn_at >= 0.0 and float(i) * dt >= turn_at) else 0.0
-		var out: PackedFloat32Array = mm.vmcall("mm_step", dt, sin(heading) * speed, cos(heading) * speed, NAN, 0, 0)
+		var heading := turn_to if (turn_at != NO_TURN and float(i) * dt >= turn_at) else 0.0
+		var out: PackedFloat32Array = mm.vmcall("mm_step", dt, sin(heading) * speed, cos(heading) * speed, NAN, STAND_MODE, NO_JUMP)
 		var x := float(out[2])
 		var zz := float(out[3])
 		z.vmcall("zone_player_pose", PLAYER, x, 0.0, zz)
@@ -137,9 +169,21 @@ func _process(_d: float) -> bool:
 	var mm = sandbox("res://mm.elf")
 	load_clips(mm)
 	var control: bool = arg("control") == "zero_velocity"
-	scenario(mm, "walk", WALK_SPEED, -1.0, 0.0, control)
-	scenario(mm, "run", RUN_SPEED, -1.0, 0.0, control)
-	scenario(mm, "turn", WALK_SPEED, 3.0, PI / 2, control)
+	var sp := speeds(mm)
+	check("mm.elf has moving stand poses and clips to take speeds from", not sp.is_empty())
+	if sp.is_empty():
+		print("RESULT: FAIL")
+		quit(1)
+		return true
+	var walk: float = sp[0]
+	var run: float = sp[1]
+	print("speeds from mm.elf: walk %.3f m/s (stand median), run %.3f m/s (clip p90 quantile %.2f)" % [walk, run, RUN_QUANTILE])
+	if run <= walk * RUN_OVER_WALK_MIN:
+		print("FAIL run %.3f m/s is not %.1fx walk %.3f m/s" % [run, RUN_OVER_WALK_MIN, walk])
+		fails += 1
+	scenario(mm, "walk", walk, NO_TURN, 0.0, control)
+	scenario(mm, "run", run, NO_TURN, 0.0, control)
+	scenario(mm, "turn", walk, TURN_AT_S, TURN_TO, control)
 	if checked != CHECKS:
 		print("FAIL made %d checks, expected %d" % [checked, CHECKS])
 		fails += 1
