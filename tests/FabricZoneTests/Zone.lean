@@ -23,6 +23,7 @@ namespace FabricZoneTests.Zone
 @[extern "fz_lean_handover_payload_trial"] opaque handoverPayloadTrial : UInt32 → UInt8 → UInt8
 @[extern "fz_lean_zone_reopen_trial"] opaque zoneReopenTrial : UInt32 → UInt8 → UInt8
 @[extern "fz_lean_pose_relay_trial"] opaque poseRelayTrial : UInt32 → UInt8 → UInt8
+@[extern "fz_lean_player_motion_trial"] opaque playerMotionTrial : UInt32 → UInt8 → UInt8
 
 def hex (b : ByteArray) : String :=
   String.join (b.toList.map fun x =>
@@ -91,6 +92,9 @@ def reopenBreaks (broken : Bool) (c : Nat) : Bool :=
 def relayBreaks (broken : Bool) (c : Nat) : Bool :=
   poseRelayTrial c.toUInt32 (if broken then 1 else 0) != 1
 
+def motionBreaks (broken : Bool) (c : Nat) : Bool :=
+  playerMotionTrial c.toUInt32 (if broken then 1 else 0) != 1
+
 def firstViolation (breaks : Nat → Bool) (steps : Nat) : Option Nat :=
   (List.range steps).find? breaks
 
@@ -115,7 +119,9 @@ def properties : List (String × (Bool → Nat → Bool)) := [
     reopenBreaks),
   ("a hand-over carries the garment's payload, and the receiving zone's journal keeps it (control: the intent drops the payload)",
     payloadBreaks),
-  ("each player sees the other's pose through the zone (control: a player claims the other's id)", relayBreaks) ]
+  ("each player sees the other's pose through the zone (control: a player claims the other's id)", relayBreaks),
+  ("a moving player leaves the zone holding its velocity, so its ghost box follows it (control: the player stays put)",
+    motionBreaks) ]
 
 
 def run : IO Nat := do

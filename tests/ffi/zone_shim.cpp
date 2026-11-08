@@ -445,4 +445,42 @@ LEAN_EXPORT uint8_t fz_lean_pose_relay_trial(uint32_t p_seed, uint8_t p_plant) {
 	return a_sees_b && b_sees_a ? 1 : 0;
 }
 
+// A player moving at a steady speed (m/tick) must leave the zone holding that velocity, so its ghost
+// box follows its motion rather than the acceleration floor. 1 when the held velocity matches the
+// motion. With `plant` the player stays put, so the zone holds zero: the defect the fix removed.
+LEAN_EXPORT uint8_t fz_lean_player_motion_trial(uint32_t p_seed, uint8_t p_plant) {
+	LoopbackNet net;
+	LoopbackNet::Endpoint &z = net.add(0);
+	LoopbackNet::Endpoint &pl = net.add(1001);
+	ZoneConfig c;
+	c.zone_id = 0;
+	c.zone_count = 1;
+	c.capacity = 16;
+	Zone zone(c, &z);
+	const double speed = 0.01 + double(mix(p_seed, 300) % 40) / 100.0; // 0.01 .. 0.40 m/tick, under V_MAX
+	const double dir[3] = { 1.0, -0.5, 0.25 };
+	pose::Pose ps;
+	ps.player_id = 1;
+	ps.mask = (uint64_t(1) << pose::BONE_COUNT) - 1;
+	for (int t = 0; t < 8; t++) {
+		for (int d = 0; d < 3; d++) {
+			ps.root[d] = p_plant != 0 ? 0.0 : dir[d] * speed * double(t);
+		}
+		std::vector<uint8_t> enc = pose::encode(ps);
+		pl.send(0, CH_PLAYER, enc.data(), int(enc.size()));
+		zone.tick();
+		net.deliver();
+	}
+	const FabricEntity *e = zone.entity(Zone::PLAYER_ENTITY_BASE + 1);
+	if (e == nullptr) {
+		return 0;
+	}
+	for (int d = 0; d < 3; d++) {
+		double got = d == 0 ? e->vx : (d == 1 ? e->vy : e->vz);
+		if (std::fabs(got - dir[d] * speed) > 1.0e-9) {
+			return 0;
+		}
+	}
+	return 1;
+}
 } // extern "C"
