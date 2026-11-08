@@ -195,6 +195,7 @@ void Zone::handle_players() {
 		uint32_t pid = pose_in.player_id;
 		player_poses[pid] = pose_in;
 		int idx = -1;
+		bool is_new_player_slot = false;
 		std::map<uint32_t, int>::iterator it = player_slot.find(pid);
 		if (it != player_slot.end() && slots[it->second].active && slots[it->second].is_player_slot) {
 			idx = it->second;
@@ -206,12 +207,34 @@ void Zone::handle_players() {
 			slots[idx] = EntitySlot();
 			slots[idx].active = true;
 			slots[idx].is_player_slot = true;
+			is_new_player_slot = true;
 			slots[idx].entity.global_id = int(uint32_t(PLAYER_ENTITY_BASE) + pid);
 			slots[idx].entity.payload[0] = (1u << 24) | ((pid & 0xFFFFu) << 8);
 			entity_count++;
 			player_slot[pid] = idx;
 		}
 		FabricEntity &e = slots[idx].entity;
+		// A player's ghost box must grow with its motion: derive velocity (m/tick) and acceleration
+		// (m/tick^2) from successive poses, clamped to the physical limits, instead of leaving them
+		// zero, which collapses the box to the acceleration floor.
+		uint32_t dt = tick_count - slots[idx].last_update_tick;
+		bool had_prev = !is_new_player_slot && dt > 0;
+		if (had_prev) {
+			const double inv = 1.0 / double(dt);
+			const double nv[3] = { (pose_in.root[0] - e.cx) * inv, (pose_in.root[1] - e.cy) * inv,
+				(pose_in.root[2] - e.cz) * inv };
+			const double ov[3] = { e.vx, e.vy, e.vz };
+			double na[3];
+			for (int i = 0; i < 3; i++) {
+				na[i] = std::clamp((nv[i] - ov[i]) * inv, -2.0 * zone::V_MAX, 2.0 * zone::V_MAX);
+			}
+			e.vx = std::clamp(nv[0], -zone::V_MAX, zone::V_MAX);
+			e.vy = std::clamp(nv[1], -zone::V_MAX, zone::V_MAX);
+			e.vz = std::clamp(nv[2], -zone::V_MAX, zone::V_MAX);
+			e.ax = na[0];
+			e.ay = na[1];
+			e.az = na[2];
+		}
 		e.cx = pose_in.root[0];
 		e.cy = pose_in.root[1];
 		e.cz = pose_in.root[2];
