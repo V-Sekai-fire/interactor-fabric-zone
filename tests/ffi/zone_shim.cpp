@@ -396,11 +396,10 @@ LEAN_EXPORT uint8_t fz_lean_zone_reopen_trial(uint32_t p_seed, uint8_t p_plant) 
 // player 1 claims player 2's id, which the zone must refuse.
 LEAN_EXPORT uint8_t fz_lean_pose_relay_trial(uint32_t p_seed, uint8_t p_plant) {
 	LoopbackNet net;
-	LoopbackNet::Endpoint &z = net.add(0);
-	LoopbackNet::Endpoint &pa = net.add(1001);
-	LoopbackNet::Endpoint &pb = net.add(1002);
 	ZoneConfig c;
-	c.zone_id = 0;
+	LoopbackNet::Endpoint &z = net.add(c.zone_id);
+	LoopbackNet::Endpoint &pa = net.add(c.player_peer_base + 1);
+	LoopbackNet::Endpoint &pb = net.add(c.player_peer_base + 2);
 	c.zone_count = 1;
 	c.capacity = 16;
 	Zone zone(c, &z);
@@ -421,7 +420,7 @@ LEAN_EXPORT uint8_t fz_lean_pose_relay_trial(uint32_t p_seed, uint8_t p_plant) {
 	for (int t = 0; t < 8; t++) {
 		for (int k = 0; k < 2; k++) {
 			std::vector<uint8_t> enc = pose::encode(poses[k]);
-			ends[k]->send(0, CH_PLAYER, enc.data(), int(enc.size()));
+			ends[k]->send(c.zone_id, CH_PLAYER, enc.data(), int(enc.size()));
 		}
 		zone.tick();
 		net.deliver();
@@ -448,16 +447,18 @@ LEAN_EXPORT uint8_t fz_lean_pose_relay_trial(uint32_t p_seed, uint8_t p_plant) {
 // A player moving at a steady speed (m/tick) must leave the zone holding that velocity, so its ghost
 // box follows its motion rather than the acceleration floor. 1 when the held velocity matches the
 // motion. With `plant` the player stays put, so the zone holds zero: the defect the fix removed.
+// The held velocity is derived in doubles from the poses; this is rounding, not slack.
+static constexpr double VELOCITY_TOLERANCE = 1.0e-9;
 LEAN_EXPORT uint8_t fz_lean_player_motion_trial(uint32_t p_seed, uint8_t p_plant) {
 	LoopbackNet net;
-	LoopbackNet::Endpoint &z = net.add(0);
-	LoopbackNet::Endpoint &pl = net.add(1001);
 	ZoneConfig c;
-	c.zone_id = 0;
+	LoopbackNet::Endpoint &z = net.add(c.zone_id);
+	LoopbackNet::Endpoint &pl = net.add(c.player_peer_base + 1);
 	c.zone_count = 1;
 	c.capacity = 16;
 	Zone zone(c, &z);
-	const double speed = 0.01 + double(mix(p_seed, 300) % 40) / 100.0; // 0.01 .. 0.40 m/tick, under V_MAX
+	// 2% to 80% of V_MAX per tick on the longest axis, so no axis reaches the clamp.
+	const double speed = (0.02 + 0.78 * double(mix(p_seed, 300) % 1000) / 1000.0) * zone::V_MAX;
 	const double dir[3] = { 1.0, -0.5, 0.25 };
 	pose::Pose ps;
 	ps.player_id = 1;
@@ -467,7 +468,7 @@ LEAN_EXPORT uint8_t fz_lean_player_motion_trial(uint32_t p_seed, uint8_t p_plant
 			ps.root[d] = p_plant != 0 ? 0.0 : dir[d] * speed * double(t);
 		}
 		std::vector<uint8_t> enc = pose::encode(ps);
-		pl.send(0, CH_PLAYER, enc.data(), int(enc.size()));
+		pl.send(c.zone_id, CH_PLAYER, enc.data(), int(enc.size()));
 		zone.tick();
 		net.deliver();
 	}
@@ -477,7 +478,7 @@ LEAN_EXPORT uint8_t fz_lean_player_motion_trial(uint32_t p_seed, uint8_t p_plant
 	}
 	for (int d = 0; d < 3; d++) {
 		double got = d == 0 ? e->vx : (d == 1 ? e->vy : e->vz);
-		if (std::fabs(got - dir[d] * speed) > 1.0e-9) {
+		if (std::fabs(got - dir[d] * speed) > VELOCITY_TOLERANCE) {
 			return 0;
 		}
 	}
