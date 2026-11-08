@@ -83,7 +83,7 @@ control() {
     ca) echo "starved|ca_open makes the session root" ;;
     quic) echo "foreign_root|the handshake completes" ;;
     zone) echo "drop_handover|the players' zone owns the garment" ;;
-    mm) echo "zero_velocity|mm.elf's later positions stay inside" ;;
+    mm) echo "zero_velocity|the zone holds the velocity mm.elf's" ;;
   esac
 }
 

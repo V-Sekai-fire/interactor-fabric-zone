@@ -3,14 +3,16 @@
 # box the zone holds for that player. Prints one line per check and RESULT: PASS or FAIL.
 #   godot --headless --path project --script tests/mm_gate.gd -- --clips=<dir>[:<dir>] [--control=zero_velocity]
 #
-# --control=zero_velocity plants the pre-#505 zone (players hold zero velocity), so the box falls to the
-# acceleration floor and a running player leaves it: the gate must exit non-zero.
+# Per scenario two checks: the zone holds the velocity mm.elf's own positions imply (one tick apart),
+# and later positions stay inside the ghost box. Zero velocity gives a loose box that still contains
+# the player, so only the velocity check catches the pre-#505 zone.
+# --control=zero_velocity plants that zone (players hold zero velocity): the gate must exit non-zero.
 extends SceneTree
 
 var fails := 0
 var checked := 0
 # walk, run, turn: a script error skips the rest without a FAIL line, so fewer checks fail.
-const CHECKS := 3
+const CHECKS := 6
 const EPS := 1.0e-4
 
 func check(what: String, ok: bool) -> void:
@@ -64,6 +66,7 @@ func scenario(mm, name: String, speed: float, turn_at: float, turn_to: float, co
 	var dt := 1.0 / 60.0
 	var pos: Array = []
 	var boxes: Array = []
+	var vels: Array = []
 	for i in 60 * 8:
 		var heading := turn_to if (turn_at >= 0.0 and float(i) * dt >= turn_at) else 0.0
 		var out: PackedFloat32Array = mm.vmcall("mm_step", dt, sin(heading) * speed, cos(heading) * speed, NAN, 0, 0)
@@ -73,7 +76,18 @@ func scenario(mm, name: String, speed: float, turn_at: float, turn_to: float, co
 		z.vmcall("zone_tick")
 		pos.append(Vector2(x, zz))
 		var g: PackedByteArray = z.vmcall("zone_player_ghost", 1)
+		vels.append(Vector2.ZERO if g.size() < 80 else Vector2(g.decode_double(0), g.decode_double(16)))
 		boxes.append([] if g.size() < 80 else [g.decode_double(24), g.decode_double(40), g.decode_double(48), g.decode_double(64), int(g.decode_double(72))])
+	var vbad := 0
+	var vmax := 0.0
+	for i in range(2, pos.size()):
+		var want: Vector2 = (pos[i] - pos[i - 1]).limit_length(0.5)
+		vmax = max(vmax, want.length())
+		if (vels[i] - want).length() > 1.0e-6:
+			vbad += 1
+	var ext: Array = boxes[boxes.size() - 1]
+	print("%s: %d of %d ticks hold a velocity other than mm.elf's (max %.4f m/tick); last box x %.3f..%.3f, horizon %d" % [name, vbad, pos.size() - 2, vmax, ext[0], ext[2], ext[4]])
+	check("the zone holds the velocity mm.elf's positions imply (%s)" % name, vbad == 0 and (vmax > 0.01 or name == "stand"))
 	var held := 0
 	var outside := 0
 	# Skip the first ticks: the zone has seen too few poses to hold a velocity yet.
