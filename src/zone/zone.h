@@ -27,6 +27,8 @@ struct ZoneConfig {
 	bool plant_double_handover = false;
 	// Control only: a hand-over sends the intent without its payload, as before it carried one.
 	bool plant_intent_without_payload = false;
+	// Control only: a player's velocity and acceleration stay zero, as before #505.
+	bool plant_zero_player_velocity = false;
 };
 
 // A row another zone published: seen here, owned there.
@@ -71,6 +73,14 @@ public:
 	const FabricEntity *entity(int p_global_id) const;
 	const std::map<int, Ghost> &ghosts() const { return ghost_rows; }
 	const std::map<uint32_t, pose::Pose> &poses() const { return player_poses; }
+	// A player's held motion and its ghost box over the snap horizon (per_delta ticks), in metres.
+	// False when the player has no slot.
+	struct PlayerGhost {
+		double v[3] = { 0, 0, 0 };
+		double box[6] = { 0, 0, 0, 0, 0, 0 }; // min x y z, max x y z
+		uint32_t horizon = 0;
+	};
+	bool player_ghost(uint32_t p_player, PlayerGhost &r_out) const;
 	uint32_t get_tick() const { return tick_count; }
 	int get_entity_count() const { return entity_count; }
 	int ghost_pairs() const { return zone::count_ghost_overlapping_pairs(slots.data(), config.capacity); }

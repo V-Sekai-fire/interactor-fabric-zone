@@ -13,6 +13,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  MM_GUEST_SHA: af39b417896df7d72a0866e7dbcfc4a4ada84e88
+
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -46,6 +49,15 @@ jobs:
             -DGUEST_RUNTIME_ROOT="$GITHUB_WORKSPACE/guest-runtime"
           cmake --build build
           ls -l fabric-zone/project/*.elf
+      - name: mm.elf, pinned, for the mm gate
+        run: |
+          git clone -q https://github.com/V-Sekai-fire/interactor-motion-matching-guest mm-guest
+          git -C mm-guest checkout -q "$MM_GUEST_SHA"
+          cmake -S mm-guest -B build-mm -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/sysroot/toolchain.cmake" \
+            -DGUEST_RUNTIME_ROOT="$GITHUB_WORKSPACE/guest-runtime" -DGUEST_ELF_DIR="$GITHUB_WORKSPACE/fabric-zone/project"
+          cmake --build build-mm
+          ls -l fabric-zone/project/mm.elf
       - name: Each ELF is the double, no-V, --strip-debug variant, and the check refuses planted defects
         working-directory: fabric-zone
         run: python3 tools/check_elf.py --self-test project/ca.elf project/quic_peer.elf project/zone.elf project/asset.elf
@@ -77,4 +89,29 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gate-${{ matrix.gate }}-${{ github.sha }}
+          path: build/gates/*.txt
+
+  # mm.elf drives a player into zone.elf. This is an integration run on a CPU runner; iFire granted
+  # the exception for this one job (2026-11-07, against the CPU integration-test rule).
+  gate-mm:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: guests-${{ github.sha }}
+          path: project
+      - name: The clips mm.elf matches
+        run: |
+          git clone -q https://github.com/V-Sekai-fire/interactor-motion-matching-guest mm-guest
+          git -C mm-guest checkout -q "$MM_GUEST_SHA"
+      - name: The mm gate and its zero-velocity control, on the pinned double editor
+        run: MM_CLIPS="$PWD/mm-guest/data/kimodo-locomotion:$PWD/mm-guest/data/o3de-motionmatching" bash tools/gates.sh mm
+      - name: Keep the gate logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-mm-${{ github.sha }}
           path: build/gates/*.txt

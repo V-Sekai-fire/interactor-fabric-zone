@@ -116,6 +116,29 @@ Zone::State Zone::state_of(int p_global_id) const {
 	return ABSENT;
 }
 
+bool Zone::player_ghost(uint32_t p_player, PlayerGhost &r_out) const {
+	std::map<uint32_t, int>::const_iterator it = player_slot.find(p_player);
+	if (it == player_slot.end() || !slots[it->second].active) {
+		return false;
+	}
+	const EntitySlot &s = slots[it->second];
+	GhostSnap snap = s.snap;
+	snap.ticks_since_snap = snap.per_delta;
+	Aabb a = zone::ghost_aabb_from_snap(snap);
+	const double u = 0.000001;
+	r_out.v[0] = s.entity.vx;
+	r_out.v[1] = s.entity.vy;
+	r_out.v[2] = s.entity.vz;
+	r_out.box[0] = double(a.min_x) * u;
+	r_out.box[1] = double(a.min_y) * u;
+	r_out.box[2] = double(a.min_z) * u;
+	r_out.box[3] = double(a.max_x) * u;
+	r_out.box[4] = double(a.max_y) * u;
+	r_out.box[5] = double(a.max_z) * u;
+	r_out.horizon = snap.per_delta;
+	return true;
+}
+
 const FabricEntity *Zone::entity(int p_global_id) const {
 	for (const EntitySlot &s : slots) {
 		if (s.active && s.entity.global_id == p_global_id) {
@@ -218,7 +241,7 @@ void Zone::handle_players() {
 		// (m/tick^2) from successive poses, clamped to the physical limits, instead of leaving them
 		// zero, which collapses the box to the acceleration floor.
 		uint32_t dt = tick_count - slots[idx].last_update_tick;
-		bool had_prev = !is_new_player_slot && dt > 0;
+		bool had_prev = !is_new_player_slot && dt > 0 && !config.plant_zero_player_velocity;
 		if (had_prev) {
 			const double inv = 1.0 / double(dt);
 			const double nv[3] = { (pose_in.root[0] - e.cx) * inv, (pose_in.root[1] - e.cy) * inv,

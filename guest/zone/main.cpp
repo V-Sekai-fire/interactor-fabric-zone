@@ -5,6 +5,7 @@
 #include <api.hpp>
 
 #include "transport/frame_transport.h"
+#include "zone/pose.h"
 #include "zone/zone.h"
 
 #include <algorithm>
@@ -16,6 +17,7 @@ namespace {
 
 fabric::FrameTransport g_transport;
 std::unique_ptr<fabric::Zone> g_zone;
+bool g_plant_zero_velocity = false;
 // The newest journal image, until the host takes it.
 std::vector<uint8_t> g_journal_image;
 bool g_journal_dirty = false;
@@ -37,6 +39,7 @@ static Variant zone_open(int zone_id, int zone_count, int capacity, int hz) {
 	c.zone_count = zone_count;
 	c.capacity = capacity > 0 ? capacity : 1800;
 	c.hz = hz > 0 ? uint32_t(hz) : 60;
+	c.plant_zero_player_velocity = g_plant_zero_velocity;
 	g_zone.reset(new fabric::Zone(c, &g_transport));
 	return text("OK zone " + std::to_string(zone_id) + " of " + std::to_string(zone_count));
 }
@@ -155,6 +158,38 @@ static Variant zone_ghosts() {
 	return Variant(PackedArray<uint8_t>(out));
 }
 
+// A player's pose as the host would relay it: root only, on the player's peer.
+static Variant zone_player_pose(int player, double x, double y, double z) {
+	if (!g_zone) {
+		return Variant(false);
+	}
+	fabric::pose::Pose p;
+	p.player_id = uint32_t(player);
+	p.root[0] = x;
+	p.root[1] = y;
+	p.root[2] = z;
+	std::vector<uint8_t> b = fabric::pose::encode(p);
+	g_transport.receive(1000 + player, fabric::CH_PLAYER, b.data(), int(b.size()));
+	return Variant(true);
+}
+
+// A player's held motion and ghost box: 10 f64 [v x y z][box min x y z, max x y z][horizon ticks], or empty.
+static Variant zone_player_ghost(int player) {
+	std::vector<uint8_t> out;
+	fabric::Zone::PlayerGhost g;
+	if (g_zone && g_zone->player_ghost(uint32_t(player), g)) {
+		double d[10] = { g.v[0], g.v[1], g.v[2], g.box[0], g.box[1], g.box[2], g.box[3], g.box[4], g.box[5], double(g.horizon) };
+		out.resize(sizeof(d));
+		std::memcpy(out.data(), d, sizeof(d));
+	}
+	return Variant(PackedArray<uint8_t>(out));
+}
+
+// Control only: call before zone_open. Players then hold zero velocity, as before #505.
+static Variant zone_plant_zero_velocity(bool on) {
+	g_plant_zero_velocity = on;
+	return Variant(true);
+}
 static Variant zone_status() {
 	if (!g_zone) {
 		return text("IDLE");
@@ -180,6 +215,9 @@ int main() {
 	ADD_API_FUNCTION(zone_entity, "PackedByteArray", "int global_id", "One held entity: [cx cy cz f64][payload 56 bytes], empty when absent");
 	ADD_API_FUNCTION(zone_state, "int", "int global_id", "0 absent, 1 owned, 2 staging, 3 incoming");
 	ADD_API_FUNCTION(zone_ghosts, "PackedByteArray", "", "Rows other zones published that this zone sees");
+	ADD_API_FUNCTION(zone_player_pose, "bool", "int player, float x, float y, float z", "A player's root position, as that player's peer would send it");
+	ADD_API_FUNCTION(zone_player_ghost, "PackedByteArray", "int player", "A player's held velocity and ghost box over the snap horizon");
+	ADD_API_FUNCTION(zone_plant_zero_velocity, "bool", "bool on", "Control: players hold zero velocity (call before zone_open)");
 	ADD_API_FUNCTION(zone_status, "String", "", "Counters");
 	halt();
 }
