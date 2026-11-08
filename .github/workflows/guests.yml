@@ -51,8 +51,7 @@ jobs:
           ls -l fabric-zone/project/*.elf
       - name: mm.elf, pinned, for the mm gate
         run: |
-          git clone -q https://github.com/V-Sekai-fire/interactor-motion-matching-guest mm-guest
-          git -C mm-guest checkout -q "$MM_GUEST_SHA"
+          bash fabric-zone/tools/fetch_mm.sh src guest
           cmake -S mm-guest -B build-mm -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/sysroot/toolchain.cmake" \
             -DGUEST_RUNTIME_ROOT="$GITHUB_WORKSPACE/guest-runtime" -DGUEST_ELF_DIR="$GITHUB_WORKSPACE/fabric-zone/project"
@@ -103,10 +102,18 @@ jobs:
         with:
           name: guests-${{ github.sha }}
           path: project
-      - name: The clips mm.elf matches
-        run: |
-          git clone -q https://github.com/V-Sekai-fire/interactor-motion-matching-guest mm-guest
-          git -C mm-guest checkout -q "$MM_GUEST_SHA"
+      # The clips change only when the pin does, so the pin is the whole key.
+      - name: The clips mm.elf matches, cached
+        id: clips
+        uses: actions/cache@v4
+        with:
+          path: |
+            mm-guest/data/kimodo-locomotion
+            mm-guest/data/o3de-motionmatching
+          key: mm-clips-${{ env.MM_GUEST_SHA }}
+      - name: The clips mm.elf matches, fetched on a cache miss
+        if: steps.clips.outputs.cache-hit != 'true'
+        run: bash tools/fetch_mm.sh data/kimodo-locomotion data/o3de-motionmatching
       - name: The mm gate and its zero-velocity control, on the pinned double editor
         run: MM_CLIPS="$PWD/mm-guest/data/kimodo-locomotion:$PWD/mm-guest/data/o3de-motionmatching" bash tools/gates.sh mm
       - name: Keep the gate logs
