@@ -60,6 +60,9 @@ jobs:
       - name: Each ELF is the double, no-V, --strip-debug variant, and the check refuses planted defects
         working-directory: fabric-zone
         run: python3 tools/check_elf.py --self-test project/ca.elf project/quic_peer.elf project/zone.elf project/asset.elf
+      - name: The Morton code equals Lean, and no source line or guest names the old curve
+        working-directory: fabric-zone
+        run: sh tools/morton_gate.sh project/ca.elf project/quic_peer.elf project/zone.elf project/asset.elf
       - uses: actions/upload-artifact@v4
         with:
           name: guests-${{ github.sha }}

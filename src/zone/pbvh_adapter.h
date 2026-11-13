@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: 2007-2014 Juan Linietsky, Ariel Manzur
 // SPDX-FileCopyrightText: 2026 K. S. Ernest (iFire) Lee
 // SPDX-License-Identifier: MIT
-// The Aabb, Hilbert, ghost and tree functions of entities-godot's core/math/predictive_bvh_adapter.h
-// (lines 47 to 1261), without the engine includes; the rest of that header uses engine math types.
+// The Aabb, ghost and tree functions of entities-godot's core/math/predictive_bvh_adapter.h
+// (lines 47 to 1261), without the engine includes and without its curve, which the generated header defines; the rest of that header uses engine math types.
 #pragma once
 
 #include <thirdparty/misc/predictive_bvh.h>
@@ -198,7 +198,7 @@ inline Aabb aabb_union(const Aabb *a, const Aabb *o) {
 }
 
 /* Fast-path predicates: short-circuit r128_le chains. Proved equivalent to
-   aabb_overlaps_ring via the Z<->GF(2) bridge — see Lean HilbertBroadphase. */
+   aabb_overlaps_ring via the Z<->GF(2) bridge — see the Lean broadphase proofs. */
 inline bool aabb_overlaps(const Aabb *a, const Aabb *o) {
 	return a->min_x <= o->max_x && o->min_x <= a->max_x && a->min_y <= o->max_y && o->min_y <= a->max_y && a->min_z <= o->max_z && o->min_z <= a->max_z;
 }
@@ -222,180 +222,6 @@ inline R128 r128_half(R128 v) {
 	r.hi = v.hi >> 1;
 	r.lo = (v.lo >> 1) | ((uint64_t)v.hi << 63);
 	return r;
-}
-
-/* Source: Build.lean (hilbert3D) — Skilling (2004) 3D Hilbert curve.
-   O(b) bit manipulation; better locality than Morton for volume partitioning.
-   Bader (2013) Ch.7: cluster diameter O(n^{1/3}) vs Morton O(n^{2/3}). */
-inline uint32_t hilbert3d(uint32_t x, uint32_t y, uint32_t z) {
-	const uint32_t order = 10;
-	const uint32_t mask = (1u << order) - 1u;
-	x &= mask;
-	y &= mask;
-	z &= mask;
-	/* Step 1: inverse undo (MSB down to bit 1) */
-	for (uint32_t i = 0; i < order - 1; i++) {
-		uint32_t q = 1u << (order - 1 - i);
-		uint32_t p = q - 1;
-		if (z & q) {
-			x ^= p;
-		} else {
-			uint32_t t = (x ^ z) & p;
-			x ^= t;
-			z ^= t;
-		}
-		if (y & q) {
-			x ^= p;
-		} else {
-			uint32_t t = (x ^ y) & p;
-			x ^= t;
-			y ^= t;
-		}
-	}
-	/* Step 2: Gray encode */
-	y ^= x;
-	z ^= y;
-	/* Step 3: fixup — propagate gray parity */
-	uint32_t t = 0;
-	for (uint32_t i = 0; i < order - 1; i++) {
-		uint32_t q = 1u << (order - 1 - i);
-		if (z & q) {
-			t ^= (q - 1);
-		}
-	}
-	x ^= t;
-	y ^= t;
-	z ^= t;
-	x &= mask;
-	y &= mask;
-	z &= mask;
-	/* Step 4: transpose to 30-bit index (MSB-first, z-y-x per triple) */
-	uint32_t h = 0;
-	for (int b = (int)order - 1; b >= 0; b--) {
-		h = (h << 1) | ((z >> b) & 1);
-		h = (h << 1) | ((y >> b) & 1);
-		h = (h << 1) | ((x >> b) & 1);
-	}
-	return h;
-}
-
-/* Forward declaration required by hilbert_of_aabb before the definition below. */
-inline void hilbert3d_inverse(uint32_t h, uint32_t *ox, uint32_t *oy, uint32_t *oz);
-
-/* Source: Build.lean (leafHilbert) — int64_t Aabb coords in µm, returns uint32 Hilbert code */
-inline uint32_t hilbert_of_aabb(const Aabb *b, const Aabb *scene) {
-	int64_t sw = scene->max_x - scene->min_x;
-	int64_t sh = scene->max_y - scene->min_y;
-	int64_t sd = scene->max_z - scene->min_z;
-	if (sw <= 0) {
-		sw = 1;
-	}
-	if (sh <= 0) {
-		sh = 1;
-	}
-	if (sd <= 0) {
-		sd = 1;
-	}
-	int64_t cx = (b->min_x + b->max_x) / 2;
-	int64_t cy = (b->min_y + b->max_y) / 2;
-	int64_t cz = (b->min_z + b->max_z) / 2;
-	int64_t nxi = (cx - scene->min_x) * 1024 / sw;
-	int64_t nyi = (cy - scene->min_y) * 1024 / sh;
-	int64_t nzi = (cz - scene->min_z) * 1024 / sd;
-	uint32_t nx = (uint32_t)(nxi < 0 ? 0 : nxi > 1023 ? 1023
-													  : nxi);
-	uint32_t ny = (uint32_t)(nyi < 0 ? 0 : nyi > 1023 ? 1023
-													  : nyi);
-	uint32_t nz = (uint32_t)(nzi < 0 ? 0 : nzi > 1023 ? 1023
-													  : nzi);
-	uint32_t h = hilbert3d(nx, ny, nz);
-	/* Witness check: inverse(forward(x,y,z)) == (x,y,z) */
-	uint32_t rx, ry, rz;
-	hilbert3d_inverse(h, &rx, &ry, &rz);
-	CRASH_COND(rx != nx || ry != ny || rz != nz);
-	return h;
-}
-
-/* Hilbert3D inverse: 30-bit code → (x, y, z) 10-bit coordinates.
-   Skilling transposeToAxes. Verified by roundtrip in Lean. */
-inline void hilbert3d_inverse(uint32_t h, uint32_t *ox, uint32_t *oy, uint32_t *oz) {
-	const uint32_t order = 10;
-	const uint32_t mask = (1u << order) - 1u;
-	uint32_t x = 0, y = 0, z = 0;
-	for (uint32_t b = 0; b < order; b++) {
-		uint32_t s = 3 * b;
-		x |= ((h >> s) & 1) << b;
-		y |= ((h >> (s + 1)) & 1) << b;
-		z |= ((h >> (s + 2)) & 1) << b;
-	}
-	/* Undo fixup: progressive decode */
-	uint32_t t = 0;
-	for (uint32_t i = 0; i < order - 1; i++) {
-		uint32_t q = 1u << (order - 1 - i);
-		if ((z ^ t) & q) {
-			t ^= (q - 1);
-		}
-	}
-	x ^= t;
-	y ^= t;
-	z ^= t;
-	/* Undo Gray: z ^= y, then y ^= x */
-	z ^= y;
-	y ^= x;
-	/* Undo main loop: Q from 2 to MSB, y then z */
-	for (uint32_t q = 2; q < (1u << order); q <<= 1) {
-		uint32_t p = q - 1;
-		if (y & q) {
-			x ^= p;
-		} else {
-			uint32_t ty = (x ^ y) & p;
-			x ^= ty;
-			y ^= ty;
-		}
-		if (z & q) {
-			x ^= p;
-		} else {
-			uint32_t tz = (x ^ z) & p;
-			x ^= tz;
-			z ^= tz;
-		}
-	}
-	*ox = x & mask;
-	*oy = y & mask;
-	*oz = z & mask;
-	/* Witness check: forward(inverse(h)) == h */
-	CRASH_COND(hilbert3d(*ox, *oy, *oz) != h);
-}
-
-/* Hilbert-cell-of: AABB from Hilbert code + prefix depth + scene bounds (int64_t µm). */
-inline Aabb hilbert_cell_of(uint32_t code, uint32_t prefix_depth, const Aabb *scene) {
-	uint32_t cx, cy, cz;
-	hilbert3d_inverse(code, &cx, &cy, &cz);
-	int64_t sw = scene->max_x - scene->min_x;
-	int64_t sh = scene->max_y - scene->min_y;
-	int64_t sd = scene->max_z - scene->min_z;
-	if (sw <= 0) {
-		sw = 1;
-	}
-	if (sh <= 0) {
-		sh = 1;
-	}
-	if (sd <= 0) {
-		sd = 1;
-	}
-	uint32_t shift = (prefix_depth < 10) ? 10 - prefix_depth : 0;
-	int64_t cell = 1LL << shift;
-	uint32_t x0 = (cx >> shift) << shift;
-	uint32_t y0 = (cy >> shift) << shift;
-	uint32_t z0 = (cz >> shift) << shift;
-	Aabb result;
-	result.min_x = scene->min_x + (int64_t)x0 * sw / 1024;
-	result.max_x = scene->min_x + ((int64_t)x0 + cell) * sw / 1024;
-	result.min_y = scene->min_y + (int64_t)y0 * sh / 1024;
-	result.max_y = scene->min_y + ((int64_t)y0 + cell) * sh / 1024;
-	result.min_z = scene->min_z + (int64_t)z0 * sd / 1024;
-	result.max_z = scene->min_z + ((int64_t)z0 + cell) * sd / 1024;
-	return result;
 }
 
 /* Per-entity delta: largest candidate where v*d + ah*d^2 <= R.
@@ -483,7 +309,7 @@ inline uint32_t pbvh_bucket_dir_size(uint32_t n) {
 }
 
 inline pbvh_node_id_t pbvh_tree_insert_h(pbvh_tree_t *t, pbvh_eclass_id_t ec,
-		Aabb box, uint32_t hilbert) {
+		Aabb box, uint32_t code) {
 	pbvh_node_id_t id;
 	if (t->free_head != PBVH_NULL_NODE) {
 		id = t->free_head;
@@ -496,7 +322,7 @@ inline pbvh_node_id_t pbvh_tree_insert_h(pbvh_tree_t *t, pbvh_eclass_id_t ec,
 	n->eclass = ec;
 	n->next_free = PBVH_NULL_NODE;
 	n->is_leaf = 1u;
-	n->hilbert = hilbert;
+	n->code = code;
 	return id;
 }
 
@@ -515,17 +341,17 @@ inline void pbvh_tree_update(pbvh_tree_t *t, pbvh_node_id_t id, Aabb box) {
 	t->nodes[id].bounds = box;
 }
 
-/* Update bounds AND hilbert code together. Caller must pbvh_tree_build()
+/* Update bounds AND code code together. Caller must pbvh_tree_build()
  * before the next _n or _b query; the sort key has changed. */
 inline void pbvh_tree_update_h(pbvh_tree_t *t, pbvh_node_id_t id,
-		Aabb box, uint32_t hilbert) {
+		Aabb box, uint32_t code) {
 	pbvh_node_t *n = &t->nodes[id];
 	n->bounds = box;
-	n->hilbert = hilbert;
+	n->code = code;
 }
 
 /* Build one internal node over sorted[lo, hi) by splitting on the highest
- * bit where the first and last Hilbert codes disagree. Pre-order layout:
+ * bit where the first and last Morton codes disagree. Pre-order layout:
  * the returned id is the slot claimed before any descendant, so internals[]
  * itself ends up in DFS order. The `skip` field is set after the children
  * are placed — it equals t->internal_count at that point, i.e. the index
@@ -555,8 +381,8 @@ inline pbvh_internal_id_t pbvh_build_internal_with_parent_(pbvh_tree_t *t,
 		n->skip = t->internal_count;
 		return id;
 	}
-	uint32_t h_lo = t->nodes[t->sorted[lo]].hilbert;
-	uint32_t h_hi = t->nodes[t->sorted[hi - 1]].hilbert;
+	uint32_t h_lo = t->nodes[t->sorted[lo]].code;
+	uint32_t h_hi = t->nodes[t->sorted[hi - 1]].code;
 	uint32_t diff = h_lo ^ h_hi;
 	uint32_t split = lo + (hi - lo) / 2;
 	if (diff != 0u) {
@@ -567,7 +393,7 @@ inline pbvh_internal_id_t pbvh_build_internal_with_parent_(pbvh_tree_t *t,
 		uint32_t mask = 1u << bit;
 		uint32_t s = hi;
 		for (uint32_t i = lo; i < hi; i++) {
-			if ((t->nodes[t->sorted[i]].hilbert & mask) != 0u) {
+			if ((t->nodes[t->sorted[i]].code & mask) != 0u) {
 				s = i;
 				break;
 			}
@@ -594,7 +420,7 @@ inline pbvh_internal_id_t pbvh_build_internal_(pbvh_tree_t *t, uint32_t lo, uint
 }
 
 /* Populate bucket_dir[2*b], bucket_dir[2*b+1] with the (lo, hi) window in
- * sorted[] whose Hilbert prefix at bucket_bits equals b. Runs in O(N + B)
+ * sorted[] whose Morton prefix at bucket_bits equals b. Runs in O(N + B)
  * where B = 1 << bucket_bits. */
 inline void pbvh_build_bucket_dir_(pbvh_tree_t *t) {
 	if (t->bucket_dir == nullptr || t->bucket_bits == 0u || t->bucket_bits > 30u) {
@@ -609,17 +435,17 @@ inline void pbvh_build_bucket_dir_(pbvh_tree_t *t) {
 	for (uint32_t b = 0; b < B; b++) {
 		t->bucket_dir[2u * b] = j;
 		while (j < t->sorted_count &&
-				(t->nodes[t->sorted[j]].hilbert >> shift) == b) {
+				(t->nodes[t->sorted[j]].code >> shift) == b) {
 			j++;
 		}
 		t->bucket_dir[2u * b + 1u] = j;
 	}
-	/* Any Hilbert codes outside [0, B) (e.g. from queries with scene-mismatched
+	/* Any Morton codes outside [0, B) (e.g. from queries with scene-mismatched
 	 * codes) land past the last bucket — those queries must fall back to _n. */
 }
 
 /* Phase 2c refit-only fast path. Caller guarantees that no dirty leaf has
- * changed bucket (hilbert prefix at bucket_bits stable), so sorted[] order
+ * changed bucket (code prefix at bucket_bits stable), so sorted[] order
  * and internals[] topology stay valid — only bounds need re-unioning.
  *
  * Walks internals[] bottom-up in reverse DFS order: leaf-range nodes
@@ -799,7 +625,7 @@ inline void pbvh_tree_refit_incremental_(pbvh_tree_t *t,
 	}
 }
 
-/* 4-pass LSD radix sort of sorted[] by 30-bit hilbert (O(N)), then build
+/* 4-pass LSD radix sort of sorted[] by 30-bit code (O(N)), then build
  * the internal tree and (if provided) the bucket directory. The radix
  * passes reuse t->internals[] as a pbvh_node_id_t scratch buffer — its
  * contents are overwritten immediately after by pbvh_build_internal_, and
@@ -825,7 +651,7 @@ inline void pbvh_tree_build(pbvh_tree_t *t) {
 			}
 			const uint32_t shift = pass * 8u;
 			for (uint32_t i = 0u; i < k; i++) {
-				uint32_t b = (t->nodes[src[i]].hilbert >> shift) & 0xFFu;
+				uint32_t b = (t->nodes[src[i]].code >> shift) & 0xFFu;
 				count_bin[b]++;
 			}
 			uint32_t sum = 0u;
@@ -835,7 +661,7 @@ inline void pbvh_tree_build(pbvh_tree_t *t) {
 				sum += c;
 			}
 			for (uint32_t i = 0u; i < k; i++) {
-				uint32_t b = (t->nodes[src[i]].hilbert >> shift) & 0xFFu;
+				uint32_t b = (t->nodes[src[i]].code >> shift) & 0xFFu;
 				dst[count_bin[b]++] = src[i];
 			}
 			pbvh_node_id_t *tmp = src;
@@ -848,9 +674,9 @@ inline void pbvh_tree_build(pbvh_tree_t *t) {
 		 * tiny harnesses that skip the allocation. */
 		for (uint32_t i = 1u; i < k; i++) {
 			pbvh_node_id_t cur = t->sorted[i];
-			uint32_t cur_h = t->nodes[cur].hilbert;
+			uint32_t cur_h = t->nodes[cur].code;
 			uint32_t j = i;
-			while (j > 0u && t->nodes[t->sorted[j - 1u]].hilbert > cur_h) {
+			while (j > 0u && t->nodes[t->sorted[j - 1u]].code > cur_h) {
 				t->sorted[j] = t->sorted[j - 1u];
 				j--;
 			}
@@ -954,20 +780,20 @@ inline void pbvh_tree_aabb_query_n(pbvh_tree_t *t, const Aabb *query,
 	t->last_visits = visits;
 }
 
-/* Bucket-directory query. Given the query's Hilbert code, computes the
+/* Bucket-directory query. Given the query's Morton code, computes the
  * owning prefix bucket in O(1) and iterates only the leaves in that window.
  * Total cost is O(1 + k) where k is the bucket's leaf count — strictly
  * better than the O(log N) descent of _n for queries the caller can tag
- * with a Hilbert code. Falls through to _n if bucket_dir wasn't built. */
+ * with a Morton code. Falls through to _n if bucket_dir wasn't built. */
 inline void pbvh_tree_aabb_query_b(pbvh_tree_t *t, const Aabb *query,
-		uint32_t query_hilbert,
+		uint32_t query_code,
 		int (*cb)(pbvh_eclass_id_t, void *), void *ud) {
 	if (t->bucket_dir == nullptr || t->bucket_bits == 0u) {
 		pbvh_tree_aabb_query_n(t, query, cb, ud);
 		return;
 	}
 	const uint32_t shift = 30u - t->bucket_bits;
-	const uint32_t b = query_hilbert >> shift;
+	const uint32_t b = query_code >> shift;
 	const uint32_t B = 1u << t->bucket_bits;
 	if (b >= B) {
 		pbvh_tree_aabb_query_n(t, query, cb, ud);
@@ -993,9 +819,9 @@ inline void pbvh_tree_aabb_query_b(pbvh_tree_t *t, const Aabb *query,
 }
 
 /* Eclass-style self-query: look up the leaf that stores eclass `self` and
- * run _b using its stored bounds + hilbert. Skips `self` in results so the
+ * run _b using its stored bounds + code. Skips `self` in results so the
  * callback only sees \"other\" eclasses that overlap. Caller works in eclass
- * IDs end-to-end; no AABB pointers, no Hilbert codes threaded through. */
+ * IDs end-to-end; no AABB pointers, no Morton codes threaded through. */
 typedef struct pbvh_eclass_skip_ud {
 	pbvh_eclass_id_t self;
 	int (*inner_cb)(pbvh_eclass_id_t, void *);
@@ -1019,16 +845,16 @@ inline void pbvh_tree_query_eclass(pbvh_tree_t *t, pbvh_eclass_id_t self,
 			continue;
 		}
 		pbvh_eclass_skip_ud_t s = { self, cb, ud };
-		pbvh_tree_aabb_query_b(t, &node->bounds, node->hilbert,
+		pbvh_tree_aabb_query_b(t, &node->bounds, node->code,
 				pbvh_eclass_skip_cb_, &s);
 		return;
 	}
 }
 
 /* Enumerate every overlapping (a, b) pair with a.eclass < b.eclass exactly
- * once. Pure eclass-style API — no caller-side AABBs, no Hilbert threading,
+ * once. Pure eclass-style API — no caller-side AABBs, no Morton threading,
  * just two eclass IDs per pair. Uses _n (nested-set skip descent) so ghost
- * AABBs that span multiple Hilbert cells stay correct. */
+ * AABBs that span multiple Morton cells stay correct. */
 typedef struct pbvh_pair_enum_ud {
 	pbvh_eclass_id_t self;
 	int matched_count;

@@ -24,6 +24,8 @@ jobs:
         run: |
           curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: The Morton code equals Lean, with its controls
+        run: sh tools/morton_gate.sh
       - name: Build and run the tests
         working-directory: tests
         # The zone's C++ uses libstdc++, and SQLite needs a newer glibc than Lean's bundled clang

@@ -89,11 +89,11 @@ Aabb scene_aabb() {
 			float(-SIM_BOUND), float(SIM_BOUND));
 }
 
-uint32_t entity_hilbert(const FabricEntity &p_entity) {
+uint32_t entity_code(const FabricEntity &p_entity) {
 	Aabb b = aabb_from_floats(float(p_entity.cx), float(p_entity.cx), float(p_entity.cy), float(p_entity.cy),
 			float(p_entity.cz), float(p_entity.cz));
 	Aabb scene = scene_aabb();
-	return hilbert_of_aabb(&b, &scene);
+	return morton_of_aabb(&b, &scene);
 }
 
 GhostSnap make_ghost_snap(const FabricEntity &p_entity) {
@@ -131,7 +131,7 @@ GhostSnap make_ghost_snap(const FabricEntity &p_entity) {
 	snap.per_delta = d;
 	snap.ticks_since_snap = 0;
 	snap.ghost_ey = r128_to_real_m(gey);
-	snap.ghost_hilbert = hilbert_of_aabb(&ghost, &scene);
+	snap.ghost_code = morton_of_aabb(&ghost, &scene);
 	return snap;
 }
 
@@ -247,7 +247,7 @@ int collect_migration_intents(EntitySlot *p_slots, int p_capacity, int p_zone_id
 		if (!s.active || s.is_staging || s.is_incoming || s.is_player_slot) {
 			continue;
 		}
-		int target = RelZone::zone_for_hilbert(p_view, entity_hilbert(s.entity));
+		int target = RelZone::zone_for_code(p_view, entity_code(s.entity));
 		if (target != p_zone_id) {
 			s.hysteresis += 1;
 			if (s.hysteresis >= hysteresis) {
@@ -297,7 +297,7 @@ int count_ghost_overlapping_pairs(const EntitySlot *p_slots, int p_capacity) {
 			continue;
 		}
 		Aabb g = ghost_aabb_from_snap(p_slots[i].snap);
-		pbvh_tree_insert_h(&tree, pbvh_eclass_id_t(i), g, hilbert_of_aabb(&g, &scene));
+		pbvh_tree_insert_h(&tree, pbvh_eclass_id_t(i), g, morton_of_aabb(&g, &scene));
 	}
 	pbvh_tree_build(&tree);
 	return pbvh_tree_enumerate_pairs(&tree, ghost_pair_noop, nullptr);
