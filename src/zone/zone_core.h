@@ -39,7 +39,7 @@ bool unpack_intent(const uint8_t *p_data, int p_size, int &r_eid, int &r_to, uin
 uint32_t staging_timeout(uint32_t p_srtt, uint32_t p_rttvar, bool p_rtt_measured, uint32_t p_hz);
 
 Aabb scene_aabb();
-uint32_t entity_hilbert(const FabricEntity &p_entity);
+uint32_t entity_code(const FabricEntity &p_entity);
 GhostSnap make_ghost_snap(const FabricEntity &p_entity);
 void update_snap(GhostSnap &r_snap, const FabricEntity &p_entity);
 Aabb ghost_aabb_from_snap(const GhostSnap &p_snap);

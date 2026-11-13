@@ -42,9 +42,9 @@
 //
 // Design invariants (mirroring Lean proofs):
 //   1. No global clock: all ordering is via VClock<N> (causal vector clocks).
-//   2. No privileged coordinator: authority is a pure function of Hilbert code.
+//   2. No privileged coordinator: authority is a pure function of Morton code.
 //   3. No canonical ordering: concurrent ops are freely reorderable.
-//   4. DisjointRanges: every Hilbert code is owned by at most one zone.
+//   4. DisjointRanges: every Morton code is owned by at most one zone.
 //   5. HLC embeds into VClock<1> for single-node backward compatibility.
 
 #include "local_vector.h"
@@ -140,7 +140,7 @@ struct VClock {
 
 // ---------------------------------------------------------------------------
 // Section 2: ZoneRange
-// A contiguous Hilbert-code interval owned by one zone.
+// A contiguous Morton-code interval owned by one zone.
 // Authority is pure geometry: no coordinator needed.
 // Corresponds to Lean: structure ZoneRange where zoneId lo hi : Nat
 // ---------------------------------------------------------------------------
@@ -153,7 +153,7 @@ struct ZoneRange {
 	bool contains(uint32_t h) const { return lo <= h && h <= hi; }
 };
 
-// DisjointRanges invariant: every Hilbert code belongs to at most one zone.
+// DisjointRanges invariant: every Morton code belongs to at most one zone.
 // Returns true iff the invariant holds over the given list.
 // Corresponds to Lean: DisjointRanges : List ZoneRange → Prop
 inline bool disjoint_ranges(const LocalVector<ZoneRange> &zones) {
@@ -201,9 +201,9 @@ struct NodeView {
 };
 
 // Build a NodeView whose ranges partition [0, 2^30) into zone_count uniform
-// Hilbert cells. Mirrors Fabric.lean assignToZone / zonePrefixDepth.
+// Morton cells. Mirrors Fabric.lean assignToZone / zonePrefixDepth.
 // The last zone's hi is extended to 2^30-1 to ensure full coverage (matches
-// the CLAMP(z, 0, count-1) behavior of the old _zone_for_hilbert).
+// the CLAMP(z, 0, count-1) behavior of the old the clamped lookup).
 template <std::size_t N>
 inline NodeView<N> node_view_from_zone_count(std::size_t self_id, int zone_count) {
 	NodeView<N> view;
@@ -238,7 +238,7 @@ inline NodeView<N> node_view_from_zone_count(std::size_t self_id, int zone_count
 // ---------------------------------------------------------------------------
 // Section 4: geometricAuthority / geometricInterest
 // Pure-function authority and interest: no RPC, no coordinator.
-// Authority: first zone whose Hilbert range contains h.
+// Authority: first zone whose Morton range contains h.
 // Interest: all zones whose range overlaps the AoI band [h-aoi, h+aoi].
 // Corresponds to Lean: geometricAuthority, geometricInterest
 // ---------------------------------------------------------------------------
@@ -269,11 +269,11 @@ inline LocalVector<ZoneRange> geometric_interest(
 	return result;
 }
 
-// zone_for_hilbert: returns the zone_id that owns Hilbert code h.
+// zone_for_code: returns the zone_id that owns Morton code h.
 // Falls back to the last zone's id when h exceeds all ranges (mirrors
-// CLAMP(z, 0, count-1) in the old _zone_for_hilbert).
+// CLAMP(z, 0, count-1) in the old the clamped lookup).
 template <std::size_t N>
-inline int zone_for_hilbert(const NodeView<N> &view, uint32_t h) {
+inline int zone_for_code(const NodeView<N> &view, uint32_t h) {
 	int last_id = 0;
 	for (uint32_t i = 0; i < view.ranges.size(); i++) {
 		last_id = (int)view.ranges[i].zone_id;
@@ -286,7 +286,7 @@ inline int zone_for_hilbert(const NodeView<N> &view, uint32_t h) {
 
 // aoi_band_cells: fills [out_lo, out_hi] for zone my_zone_id's AOI band,
 // extending by aoi_cells cell-widths on each side.
-// Replaces FabricZone::_hilbert_aoi_band (now removed).
+// Replaces the per-zone band function (now removed).
 // Cell width is inferred from the zone's [lo, hi] range in the NodeView.
 template <std::size_t N>
 inline bool aoi_band_cells(const NodeView<N> &view, uint32_t my_zone_id,
@@ -307,7 +307,7 @@ inline bool aoi_band_cells(const NodeView<N> &view, uint32_t my_zone_id,
 	return false;
 }
 
-// in_interest_band: returns true if Hilbert code h falls within zone
+// in_interest_band: returns true if Morton code h falls within zone
 // my_zone_id's AOI band (own range padded by aoi_cells on each side).
 template <std::size_t N>
 inline bool in_interest_band(const NodeView<N> &view, uint32_t my_zone_id,
@@ -362,7 +362,7 @@ template <std::size_t N>
 struct RelReplica {
 	uint64_t entity_id = 0;
 	uint32_t author_zone = 0;
-	uint32_t hilbert_code = 0;
+	uint32_t curve_code = 0;
 
 	int64_t pos_x = 0;
 	int64_t pos_y = 0;

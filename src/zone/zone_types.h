@@ -29,7 +29,7 @@ struct GhostSnap {
 	uint32_t per_delta = 1;
 	uint32_t ticks_since_snap = 0;
 	real_t ghost_ey = 0.0;
-	uint32_t ghost_hilbert = 0;
+	uint32_t ghost_code = 0;
 };
 
 // Migration state (Lean: Fabric.lean MigrationState):
